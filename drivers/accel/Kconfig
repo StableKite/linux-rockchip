@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Compute Acceleration device configuration
+#
+
+if DRM
+
+menuconfig DRM_ACCEL
+	bool "Compute Acceleration Framework"
+	help
+	  Framework for device drivers of compute acceleration devices.
+
+if DRM_ACCEL
+source "drivers/accel/rocket/Kconfig"
+endif
+
+endif

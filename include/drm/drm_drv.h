@@ -100,6 +100,12 @@ enum drm_driver_feature {
 	 * Driver supports user defined GPU VA bindings for GEM objects.
 	 */
 	DRIVER_GEM_GPUVA		= BIT(8),
+	/**
+	 * @DRIVER_COMPUTE_ACCEL:
+	 *
+	 * Driver supports compute acceleration devices.
+	 */
+	DRIVER_COMPUTE_ACCEL		= BIT(9),
 
 	/* IMPORTANT: Below are all the legacy flags, add new ones above. */
 
