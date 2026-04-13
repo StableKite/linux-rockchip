@@ -3788,7 +3788,7 @@
 		status = "disabled";
 	};
 
-	rknn_core_0: npu@fdab0000 {
+	rknn_core_0: rknn-core@fdab0000 {
 
 		compatible = "rockchip,rk3588-rknn-core";
 
@@ -3825,7 +3825,7 @@
 	};
 
 
-	rknn_mmu_0: iommu@fdab9000 {
+	rknn_mmu_0: rknn-iommu@fdab9000 {
 
 		compatible = "rockchip,rk3588-iommu", "rockchip,rk3568-iommu";
 
@@ -3848,7 +3848,7 @@
 	};
 
 
-	rknn_core_1: npu@fdac0000 {
+	rknn_core_1: rknn-core@fdac0000 {
 
 		compatible = "rockchip,rk3588-rknn-core";
 
@@ -3885,7 +3885,7 @@
 	};
 
 
-	rknn_mmu_1: iommu@fdaca000 {
+	rknn_mmu_1: rknn-iommu@fdaca000 {
 
 		compatible = "rockchip,rk3588-iommu", "rockchip,rk3568-iommu";
 
@@ -3906,7 +3906,7 @@
 	};
 
 
-	rknn_core_2: npu@fdad0000 {
+	rknn_core_2: rknn-core@fdad0000 {
 
 		compatible = "rockchip,rk3588-rknn-core";
 
@@ -3943,7 +3943,7 @@
 	};
 
 
-	rknn_mmu_2: iommu@fdada000 {
+	rknn_mmu_2: rknn-iommu@fdada000 {
 
 		compatible = "rockchip,rk3588-iommu", "rockchip,rk3568-iommu";
 
