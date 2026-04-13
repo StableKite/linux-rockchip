@@ -1,0 +1,27 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "rockchip,rk3588";
+
+	/*
+	 * Experimental overlay.
+	 * In the expanded DT / aliases seen during debugging, dphy2 appeared as
+	 * /csi2-dphy2 while mipi2-csi2 also existed. Unlike dcphy0/dcphy1, this
+	 * route was not validated end-to-end with OV13855 in the same way, so keep
+	 * this one for testing rather than as a default production choice.
+	 */
+	fragment@0 {
+		target-path = "/csi2-dphy2";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target-path = "/mipi2-csi2";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+};

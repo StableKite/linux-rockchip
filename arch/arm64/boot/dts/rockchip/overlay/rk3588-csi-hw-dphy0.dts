@@ -1,0 +1,13 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "rockchip,rk3588";
+
+	fragment@0 {
+		target-path = "/csi2-dphy0-hw@fedc0000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+};
