@@ -155,6 +155,12 @@ dtbo-$(CONFIG_ARCH_ROCKCHIP) += \
 	rk3588-ov13855-c1.dtbo \
 	rk3588-ov13855-c2.dtbo \
 	rk3588-ov13855-c3.dtbo \
+	rk3588-imx415-c1-2lane.dtbo \
+	rk3588-imx415-c2-2lane.dtbo \
+	rk3588-imx415-c3-2lane.dtbo \
+	rk3588-imx415-c1-4lane.dtbo \
+	rk3588-imx415-c2-4lane.dtbo \
+	rk3588-imx415-c3-4lane.dtbo \
 	rk3588-pwm0-m0.dtbo \
 	rk3588-pwm0-m1.dtbo \
 	rk3588-pwm0-m2.dtbo \
