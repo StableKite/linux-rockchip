@@ -104,6 +104,7 @@ struct regval {
 };
 
 struct ov13855_mode {
+	u32 bus_fmt;
 	u32 width;
 	u32 height;
 	struct v4l2_fract max_fps;
@@ -142,6 +143,8 @@ struct ov13855 {
 	bool			streaming;
 	bool			power_on;
 	const struct ov13855_mode *cur_mode;
+	struct v4l2_mbus_framefmt cur_fmt;
+	struct v4l2_fract	cur_fi;
 	u32			module_index;
 	const char		*module_facing;
 	const char		*module_name;
@@ -925,6 +928,7 @@ static const struct regval ov13855_4224x3136_30fps_regs[] = {
 
 static const struct ov13855_mode supported_modes[] = {
 	{
+		.bus_fmt = OV13855_MEDIA_BUS_FMT,
 		.width = 4224,
 		.height = 3136,
 		.max_fps = {
@@ -940,6 +944,7 @@ static const struct ov13855_mode supported_modes[] = {
 	},
 #ifdef DEBUG
 	{
+		.bus_fmt = OV13855_MEDIA_BUS_FMT,
 		.width = 2112,
 		.height = 1568,
 		.max_fps = {
@@ -954,6 +959,7 @@ static const struct ov13855_mode supported_modes[] = {
 		.link_freq_idx = 1,
 	},
 	{
+		.bus_fmt = OV13855_MEDIA_BUS_FMT,
 		.width = 4224,
 		.height = 3136,
 		.max_fps = {
@@ -1071,23 +1077,113 @@ static int ov13855_get_reso_dist(const struct ov13855_mode *mode,
 }
 
 static const struct ov13855_mode *
-ov13855_find_best_fit(struct v4l2_subdev_format *fmt)
+ov13855_find_best_fit(struct v4l2_mbus_framefmt *framefmt)
 {
-	struct v4l2_mbus_framefmt *framefmt = &fmt->format;
+	const struct ov13855_mode *best_fit = NULL;
+	u32 bus_fmt = framefmt->code;
 	int dist;
-	int cur_best_fit = 0;
 	int cur_best_fit_dist = -1;
 	unsigned int i;
 
+	if (bus_fmt != OV13855_MEDIA_BUS_FMT)
+		bus_fmt = supported_modes[0].bus_fmt;
+
+	framefmt->code = bus_fmt;
+
 	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
+		if (supported_modes[i].bus_fmt != bus_fmt)
+			continue;
+
 		dist = ov13855_get_reso_dist(&supported_modes[i], framefmt);
 		if (cur_best_fit_dist == -1 || dist < cur_best_fit_dist) {
 			cur_best_fit_dist = dist;
-			cur_best_fit = i;
+			best_fit = &supported_modes[i];
 		}
 	}
 
-	return &supported_modes[cur_best_fit];
+	return best_fit;
+}
+
+static bool ov13855_mode_matches_format(const struct ov13855_mode *mode,
+					const struct v4l2_mbus_framefmt *framefmt)
+{
+	return mode->bus_fmt == framefmt->code &&
+	       mode->width == framefmt->width &&
+	       mode->height == framefmt->height;
+}
+
+static u64 ov13855_get_interval_dist(const struct v4l2_fract *a,
+				     const struct v4l2_fract *b)
+{
+	u64 lhs = (u64)a->denominator * b->numerator;
+	u64 rhs = (u64)b->denominator * a->numerator;
+
+	return lhs > rhs ? lhs - rhs : rhs - lhs;
+}
+
+static const struct ov13855_mode *
+ov13855_find_mode_by_format_and_interval(
+		const struct v4l2_mbus_framefmt *framefmt,
+		const struct v4l2_fract *interval)
+{
+	const struct ov13855_mode *best_fit = NULL;
+	u64 best_dist = U64_MAX;
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
+		const struct ov13855_mode *mode = &supported_modes[i];
+		u64 dist;
+
+		if (!ov13855_mode_matches_format(mode, framefmt))
+			continue;
+
+		if (!interval)
+			return mode;
+
+		dist = ov13855_get_interval_dist(&mode->max_fps, interval);
+		if (!best_fit || dist < best_dist) {
+			best_fit = mode;
+			best_dist = dist;
+		}
+	}
+
+	return best_fit;
+}
+
+static void ov13855_update_controls(struct ov13855 *ov13855,
+				    const struct ov13855_mode *mode)
+{
+	s64 exposure_max, vblank_def;
+	u32 h_blank;
+	u64 pixel_rate;
+	u32 lane_num = OV13855_LANES;
+
+	h_blank = mode->hts_def - mode->width;
+	if (ov13855->hblank)
+		__v4l2_ctrl_modify_range(ov13855->hblank, h_blank,
+					 h_blank, 1, h_blank);
+
+	vblank_def = mode->vts_def - mode->height;
+	if (ov13855->vblank) {
+		__v4l2_ctrl_modify_range(ov13855->vblank, vblank_def,
+					 OV13855_VTS_MAX - mode->height,
+					 1, vblank_def);
+		__v4l2_ctrl_s_ctrl(ov13855->vblank, vblank_def);
+	}
+
+	exposure_max = mode->vts_def - 4;
+	if (ov13855->exposure)
+		__v4l2_ctrl_modify_range(ov13855->exposure,
+					 OV13855_EXPOSURE_MIN, exposure_max,
+					 OV13855_EXPOSURE_STEP, mode->exp_def);
+
+	pixel_rate = (u32)link_freq_items[mode->link_freq_idx] /
+		     mode->bpp * 2 * lane_num;
+	if (ov13855->pixel_rate)
+		__v4l2_ctrl_s_ctrl_int64(ov13855->pixel_rate, pixel_rate);
+
+	if (ov13855->link_freq)
+		__v4l2_ctrl_s_ctrl(ov13855->link_freq, mode->link_freq_idx);
 }
 
 static int ov13855_set_fmt(struct v4l2_subdev *sd,
@@ -1096,14 +1192,11 @@ static int ov13855_set_fmt(struct v4l2_subdev *sd,
 {
 	struct ov13855 *ov13855 = to_ov13855(sd);
 	const struct ov13855_mode *mode;
-	s64 h_blank, vblank_def;
-	u64 pixel_rate = 0;
-	u32 lane_num = OV13855_LANES;
 
 	mutex_lock(&ov13855->mutex);
 
-	mode = ov13855_find_best_fit(fmt);
-	fmt->format.code = OV13855_MEDIA_BUS_FMT;
+	mode = ov13855_find_best_fit(&fmt->format);
+	fmt->format.code = mode->bus_fmt;
 	fmt->format.width = mode->width;
 	fmt->format.height = mode->height;
 	fmt->format.field = V4L2_FIELD_NONE;
@@ -1115,21 +1208,20 @@ static int ov13855_set_fmt(struct v4l2_subdev *sd,
 		return -ENOTTY;
 #endif
 	} else {
-		ov13855->cur_mode = mode;
-		h_blank = mode->hts_def - mode->width;
-		__v4l2_ctrl_modify_range(ov13855->hblank, h_blank,
-					 h_blank, 1, h_blank);
-		vblank_def = mode->vts_def - mode->height;
-		__v4l2_ctrl_modify_range(ov13855->vblank, vblank_def,
-					 OV13855_VTS_MAX - mode->height,
-					 1, vblank_def);
-		__v4l2_ctrl_s_ctrl(ov13855->vblank, vblank_def);
-		pixel_rate = (u32)link_freq_items[mode->link_freq_idx] / mode->bpp * 2 * lane_num;
+		ov13855->cur_fmt = fmt->format;
+		mode = ov13855_find_mode_by_format_and_interval(&ov13855->cur_fmt,
+							       &ov13855->cur_fi);
+		if (!mode)
+			mode = ov13855_find_mode_by_format_and_interval(
+					&ov13855->cur_fmt, NULL);
+		if (!mode) {
+			mutex_unlock(&ov13855->mutex);
+			return -EINVAL;
+		}
 
-		__v4l2_ctrl_s_ctrl_int64(ov13855->pixel_rate,
-					 pixel_rate);
-		__v4l2_ctrl_s_ctrl(ov13855->link_freq,
-				   mode->link_freq_idx);
+		ov13855->cur_mode = mode;
+		ov13855->cur_fi = mode->max_fps;
+		ov13855_update_controls(ov13855, mode);
 	}
 	dev_info(&ov13855->client->dev, "%s: mode->link_freq_idx(%d)",
 		 __func__, mode->link_freq_idx);
@@ -1144,7 +1236,6 @@ static int ov13855_get_fmt(struct v4l2_subdev *sd,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct ov13855 *ov13855 = to_ov13855(sd);
-	const struct ov13855_mode *mode = ov13855->cur_mode;
 
 	mutex_lock(&ov13855->mutex);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
@@ -1155,10 +1246,7 @@ static int ov13855_get_fmt(struct v4l2_subdev *sd,
 		return -ENOTTY;
 #endif
 	} else {
-		fmt->format.width = mode->width;
-		fmt->format.height = mode->height;
-		fmt->format.code = OV13855_MEDIA_BUS_FMT;
-		fmt->format.field = V4L2_FIELD_NONE;
+		fmt->format = ov13855->cur_fmt;
 	}
 	mutex_unlock(&ov13855->mutex);
 
@@ -1169,29 +1257,71 @@ static int ov13855_enum_mbus_code(struct v4l2_subdev *sd,
 				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
-	if (code->index != 0)
-		return -EINVAL;
-	code->code = OV13855_MEDIA_BUS_FMT;
+	u32 bus_fmts[ARRAY_SIZE(supported_modes)];
+	unsigned int i, num_codes = 0;
 
-	return 0;
+	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
+		unsigned int j;
+		bool found = false;
+
+		for (j = 0; j < num_codes; j++) {
+			if (bus_fmts[j] == supported_modes[i].bus_fmt) {
+				found = true;
+				break;
+			}
+		}
+
+		if (found)
+			continue;
+
+		if (num_codes == code->index) {
+			code->code = supported_modes[i].bus_fmt;
+			return 0;
+		}
+
+		bus_fmts[num_codes++] = supported_modes[i].bus_fmt;
+	}
+
+	return -EINVAL;
 }
 
 static int ov13855_enum_frame_sizes(struct v4l2_subdev *sd,
 				    struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
-	if (fse->index >= ARRAY_SIZE(supported_modes))
-		return -EINVAL;
+	unsigned int i, idx = 0;
 
-	if (fse->code != OV13855_MEDIA_BUS_FMT)
-		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
+		unsigned int j;
+		bool found = false;
 
-	fse->min_width  = supported_modes[fse->index].width;
-	fse->max_width  = supported_modes[fse->index].width;
-	fse->max_height = supported_modes[fse->index].height;
-	fse->min_height = supported_modes[fse->index].height;
+		if (supported_modes[i].bus_fmt != fse->code)
+			continue;
 
-	return 0;
+		for (j = 0; j < i; j++) {
+			if (supported_modes[j].bus_fmt == supported_modes[i].bus_fmt &&
+			    supported_modes[j].width == supported_modes[i].width &&
+			    supported_modes[j].height == supported_modes[i].height) {
+				found = true;
+				break;
+			}
+		}
+
+		if (found)
+			continue;
+
+		if (idx == fse->index) {
+			fse->min_width  = supported_modes[i].width;
+			fse->max_width  = supported_modes[i].width;
+			fse->max_height = supported_modes[i].height;
+			fse->min_height = supported_modes[i].height;
+			return 0;
+		}
+
+		idx++;
+	}
+
+	return -EINVAL;
 }
 
 static int ov13855_enable_test_pattern(struct ov13855 *ov13855, u32 pattern)
@@ -1213,9 +1343,37 @@ static int ov13855_g_frame_interval(struct v4l2_subdev *sd,
 				    struct v4l2_subdev_frame_interval *fi)
 {
 	struct ov13855 *ov13855 = to_ov13855(sd);
-	const struct ov13855_mode *mode = ov13855->cur_mode;
 
+	fi->interval = ov13855->cur_fi;
+
+	return 0;
+}
+
+static int ov13855_s_frame_interval(struct v4l2_subdev *sd,
+				    struct v4l2_subdev_frame_interval *fi)
+{
+	struct ov13855 *ov13855 = to_ov13855(sd);
+	const struct ov13855_mode *mode;
+
+	mutex_lock(&ov13855->mutex);
+
+	mode = ov13855_find_mode_by_format_and_interval(&ov13855->cur_fmt,
+							  &fi->interval);
+	if (!mode) {
+		mutex_unlock(&ov13855->mutex);
+		return -EINVAL;
+	}
+
+	ov13855->cur_mode = mode;
+	ov13855->cur_fi = mode->max_fps;
+	ov13855->cur_fmt.code = mode->bus_fmt;
+	ov13855->cur_fmt.width = mode->width;
+	ov13855->cur_fmt.height = mode->height;
+	ov13855->cur_fmt.field = V4L2_FIELD_NONE;
+	ov13855_update_controls(ov13855, mode);
 	fi->interval = mode->max_fps;
+
+	mutex_unlock(&ov13855->mutex);
 
 	return 0;
 }
@@ -1628,7 +1786,7 @@ static int ov13855_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	/* Initialize try_fmt */
 	try_fmt->width = def_mode->width;
 	try_fmt->height = def_mode->height;
-	try_fmt->code = OV13855_MEDIA_BUS_FMT;
+	try_fmt->code = def_mode->bus_fmt;
 	try_fmt->field = V4L2_FIELD_NONE;
 
 	mutex_unlock(&ov13855->mutex);
@@ -1642,15 +1800,23 @@ static int ov13855_enum_frame_interval(struct v4l2_subdev *sd,
 				       struct v4l2_subdev_state *sd_state,
 				       struct v4l2_subdev_frame_interval_enum *fie)
 {
-	if (fie->index >= ARRAY_SIZE(supported_modes))
-		return -EINVAL;
+	unsigned int i, idx = 0;
 
-	fie->code = OV13855_MEDIA_BUS_FMT;
-	fie->width = supported_modes[fie->index].width;
-	fie->height = supported_modes[fie->index].height;
-	fie->interval = supported_modes[fie->index].max_fps;
+	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
+		if (supported_modes[i].bus_fmt != fie->code ||
+		    supported_modes[i].width != fie->width ||
+		    supported_modes[i].height != fie->height)
+			continue;
 
-	return 0;
+		if (idx == fie->index) {
+			fie->interval = supported_modes[i].max_fps;
+			return 0;
+		}
+
+		idx++;
+	}
+
+	return -EINVAL;
 }
 
 static int ov13855_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad,
@@ -1702,6 +1868,7 @@ static const struct v4l2_subdev_core_ops ov13855_core_ops = {
 static const struct v4l2_subdev_video_ops ov13855_video_ops = {
 	.s_stream = ov13855_s_stream,
 	.g_frame_interval = ov13855_g_frame_interval,
+	.s_frame_interval = ov13855_s_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops ov13855_pad_ops = {
@@ -1938,6 +2105,11 @@ static int ov13855_probe(struct i2c_client *client,
 
 	ov13855->client = client;
 	ov13855->cur_mode = &supported_modes[0];
+	ov13855->cur_fmt.width = ov13855->cur_mode->width;
+	ov13855->cur_fmt.height = ov13855->cur_mode->height;
+	ov13855->cur_fmt.code = ov13855->cur_mode->bus_fmt;
+	ov13855->cur_fmt.field = V4L2_FIELD_NONE;
+	ov13855->cur_fi = ov13855->cur_mode->max_fps;
 
 	ov13855->xvclk = devm_clk_get(dev, "xvclk");
 	if (IS_ERR(ov13855->xvclk)) {
