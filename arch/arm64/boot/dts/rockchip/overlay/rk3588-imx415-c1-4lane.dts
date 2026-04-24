@@ -81,7 +81,7 @@
             rockchip,camera-module-index = <0>;
             rockchip,camera-module-facing = "back";
             reset-gpios = <&gpio3 20 1>;
-            pwdn-gpios = <&gpio3 22 1>;
+            power-gpios = <&gpio3 22 1>;
             /delete-property/ lens-focus;
 
             port {

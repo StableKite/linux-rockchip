@@ -687,19 +687,147 @@ static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_891M_reg
 	{REG_NULL, 0x00},
 };
 
-static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_2376M_regs[] = {
+/*
+ * Experimental linear 10-bit high-speed timing candidates.
+ * These use the high-speed 2376 Mbps PHY/timing block, but keep the
+ * all-pixel VMAX=0x08ca readout and select FPS by HMAX only.
+ * EXP default is 128 lines, so SHR0 is programmed as VMAX - EXP = 0x084a.
+ */
+static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax03c2_2376M_regs[] = {
 	{0x3020, 0x00},
 	{0x3021, 0x00},
 	{0x3022, 0x00},
 	{0x3024, 0xCA},
 	{0x3025, 0x08},
-	{0x3028, 0x6E},
-	{0x3029, 0x01},
+	{0x3026, 0x00},
+	{0x3028, 0xC2},
+	{0x3029, 0x03},
 	{0x302C, 0x00},
 	{0x302D, 0x00},
 	{0x3033, 0x00},
-	{0x3050, 0x08},
-	{0x3051, 0x00},
+	{0x3050, 0x4A},
+	{0x3051, 0x08},
+	{0x3052, 0x00},
+	{0x3054, 0x19},
+	{0x3058, 0x3E},
+	{0x3060, 0x25},
+	{0x3064, 0x4A},
+	{0x30CF, 0x00},
+	{0x3118, 0x00},
+	{0x3119, 0x01},
+	{0x311A, 0xE0},
+	{0x3260, 0x01},
+	{0x400C, 0x01},
+	{0x4018, 0xE7},
+	{0x401A, 0x8F},
+	{0x401C, 0x8F},
+	{0x401E, 0x7F},
+	{0x401F, 0x02},
+	{0x4020, 0x97},
+	{0x4022, 0x0F},
+	{0x4023, 0x01},
+	{0x4024, 0x97},
+	{0x4026, 0xF7},
+	{0x4028, 0x7F},
+	{0x4074, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax0389_2376M_regs[] = {
+	{0x3020, 0x00},
+	{0x3021, 0x00},
+	{0x3022, 0x00},
+	{0x3024, 0xCA},
+	{0x3025, 0x08},
+	{0x3026, 0x00},
+	{0x3028, 0x89},
+	{0x3029, 0x03},
+	{0x302C, 0x00},
+	{0x302D, 0x00},
+	{0x3033, 0x00},
+	{0x3050, 0x4A},
+	{0x3051, 0x08},
+	{0x3052, 0x00},
+	{0x3054, 0x19},
+	{0x3058, 0x3E},
+	{0x3060, 0x25},
+	{0x3064, 0x4A},
+	{0x30CF, 0x00},
+	{0x3118, 0x00},
+	{0x3119, 0x01},
+	{0x311A, 0xE0},
+	{0x3260, 0x01},
+	{0x400C, 0x01},
+	{0x4018, 0xE7},
+	{0x401A, 0x8F},
+	{0x401C, 0x8F},
+	{0x401E, 0x7F},
+	{0x401F, 0x02},
+	{0x4020, 0x97},
+	{0x4022, 0x0F},
+	{0x4023, 0x01},
+	{0x4024, 0x97},
+	{0x4026, 0xF7},
+	{0x4028, 0x7F},
+	{0x4074, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax0358_2376M_regs[] = {
+	{0x3020, 0x00},
+	{0x3021, 0x00},
+	{0x3022, 0x00},
+	{0x3024, 0xCA},
+	{0x3025, 0x08},
+	{0x3026, 0x00},
+	{0x3028, 0x58},
+	{0x3029, 0x03},
+	{0x302C, 0x00},
+	{0x302D, 0x00},
+	{0x3033, 0x00},
+	{0x3050, 0x4A},
+	{0x3051, 0x08},
+	{0x3052, 0x00},
+	{0x3054, 0x19},
+	{0x3058, 0x3E},
+	{0x3060, 0x25},
+	{0x3064, 0x4A},
+	{0x30CF, 0x00},
+	{0x3118, 0x00},
+	{0x3119, 0x01},
+	{0x311A, 0xE0},
+	{0x3260, 0x01},
+	{0x400C, 0x01},
+	{0x4018, 0xE7},
+	{0x401A, 0x8F},
+	{0x401C, 0x8F},
+	{0x401E, 0x7F},
+	{0x401F, 0x02},
+	{0x4020, 0x97},
+	{0x4022, 0x0F},
+	{0x4023, 0x01},
+	{0x4024, 0x97},
+	{0x4026, 0xF7},
+	{0x4028, 0x7F},
+	{0x4074, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax0357_2376M_regs[] = {
+	{0x3020, 0x00},
+	{0x3021, 0x00},
+	{0x3022, 0x00},
+	{0x3024, 0xCA},
+	{0x3025, 0x08},
+	{0x3026, 0x00},
+	{0x3028, 0x57},
+	{0x3029, 0x03},
+	{0x302C, 0x00},
+	{0x302D, 0x00},
+	{0x3033, 0x00},
+	{0x3050, 0x4A},
+	{0x3051, 0x08},
+	{0x3052, 0x00},
 	{0x3054, 0x19},
 	{0x3058, 0x3E},
 	{0x3060, 0x25},
@@ -1145,18 +1273,39 @@ static const struct imx415_mode supported_modes[] = {
 		.xvclk = IMX415_XVCLK_FREQ_37M,
 	},
 	{
+		/* Experimental 4K ~89.95 fps candidate, HMAX=0x0358. */
 		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
 		.width = 3864,
 		.height = 2192,
 		.max_fps = {
 			.numerator = 10000,
-			.denominator = 901640,
+			.denominator = 899500,
 		},
-		.exp_def = 0x08ca - 0x08,
-		.hts_def = 4392,
+		.exp_def = 128,
+		.hts_def = 0x0358 * IMX415_4LANES * 2,
 		.vts_def = 0x08ca,
 		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_2376M_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_hmax0358_2376M_regs,
+		.hdr_mode = NO_HDR,
+		.mipi_freq_idx = 4,
+		.bpp = 10,
+		.vc[PAD0] = 0,
+		.xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	{
+		/* Experimental 4K true-90 candidate, HMAX=0x0357. */
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 3864,
+		.height = 2192,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 900600,
+		},
+		.exp_def = 128,
+		.hts_def = 0x0357 * IMX415_4LANES * 2,
+		.vts_def = 0x08ca,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_hmax0357_2376M_regs,
 		.hdr_mode = NO_HDR,
 		.mipi_freq_idx = 4,
 		.bpp = 10,
@@ -1239,6 +1388,86 @@ static const struct imx415_mode supported_modes[] = {
 		.vc[PAD1] = 1,//M->csi wr0
 		.vc[PAD2] = 0,//L->csi wr0
 		.vc[PAD3] = 2,//S->csi wr2
+		.xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	{
+		/* Stable FullHD/all-pixel high-speed candidate, HMAX=0x03c2. */
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 1944,
+		.height = 1097,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 800400,
+		},
+		.exp_def = 128,
+		.hts_def = 0x03c2 * IMX415_4LANES * 2,
+		.vts_def = 0x08ca,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_hmax03c2_2376M_regs,
+		.hdr_mode = NO_HDR,
+		.mipi_freq_idx = 4,
+		.bpp = 10,
+		.vc[PAD0] = 0,
+		.xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	{
+		/* Preferred stable FullHD/all-pixel high-speed candidate, HMAX=0x0389. */
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 1944,
+		.height = 1097,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 850800,
+		},
+		.exp_def = 128,
+		.hts_def = 0x0389 * IMX415_4LANES * 2,
+		.vts_def = 0x08ca,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_hmax0389_2376M_regs,
+		.hdr_mode = NO_HDR,
+		.mipi_freq_idx = 4,
+		.bpp = 10,
+		.vc[PAD0] = 0,
+		.xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	{
+		/* Experimental FullHD/all-pixel ~89.95 fps candidate, HMAX=0x0358. */
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 1944,
+		.height = 1097,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 899500,
+		},
+		.exp_def = 128,
+		.hts_def = 0x0358 * IMX415_4LANES * 2,
+		.vts_def = 0x08ca,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_hmax0358_2376M_regs,
+		.hdr_mode = NO_HDR,
+		.mipi_freq_idx = 4,
+		.bpp = 10,
+		.vc[PAD0] = 0,
+		.xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	{
+		/* Experimental FullHD/all-pixel true-90 candidate, HMAX=0x0357. */
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 1944,
+		.height = 1097,
+		.max_fps = {
+			.numerator = 10000,
+			.denominator = 900600,
+		},
+		.exp_def = 128,
+		.hts_def = 0x0357 * IMX415_4LANES * 2,
+		.vts_def = 0x08ca,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_hmax0357_2376M_regs,
+		.hdr_mode = NO_HDR,
+		.mipi_freq_idx = 4,
+		.bpp = 10,
+		.vc[PAD0] = 0,
 		.xvclk = IMX415_XVCLK_FREQ_37M,
 	},
 	{
@@ -1505,15 +1734,33 @@ static int imx415_get_reso_dist(const struct imx415_mode *mode,
 
 static bool imx415_mode_has_code(const struct imx415_mode *mode, u32 code)
 {
-	return mode->bus_fmt == code;
+	/*
+	 * Some userspace tools pass code=0 when the textual mbus code was not
+	 * parsed. Treat it as a wildcard instead of silently falling back to 4K.
+	 */
+	return !code || mode->bus_fmt == code;
 }
 
 static bool imx415_mode_has_format(const struct imx415_mode *mode, u32 code,
 				   u32 width, u32 height)
 {
-	return mode->bus_fmt == code &&
+	return imx415_mode_has_code(mode, code) &&
 	       mode->width == width &&
 	       mode->height == height;
+}
+
+static u64 imx415_fps_distance(const struct imx415_mode *mode,
+			       const struct v4l2_fract *interval)
+{
+	s64 delta;
+
+	if (!interval || !interval->numerator || !interval->denominator)
+		return 0;
+
+	delta = (s64)mode->max_fps.denominator * interval->numerator -
+		(s64)interval->denominator * mode->max_fps.numerator;
+
+	return delta < 0 ? -delta : delta;
 }
 
 static const struct imx415_mode *
@@ -1521,18 +1768,126 @@ imx415_find_best_fit(struct imx415 *imx415, struct v4l2_subdev_format *fmt)
 {
 	struct v4l2_mbus_framefmt *framefmt = &fmt->format;
 	const struct imx415_mode *mode = NULL;
+	const struct imx415_mode *candidate;
+	struct v4l2_fract keep_fps = { 0 };
+	u64 best_fps_dist = ~0ULL;
 	int dist;
-	int cur_best_fit_dist = -1;
+	int best_res_dist = -1;
 	unsigned int i;
+	u32 cur_hdr = imx415->cur_mode ? imx415->cur_mode->hdr_mode : NO_HDR;
 
+	if (imx415->cur_mode)
+		keep_fps = imx415->cur_mode->max_fps;
+
+	/*
+	 * Several modes intentionally share width/height/code and differ only by
+	 * frame interval. If userspace selected one by s_frame_interval(), a later
+	 * repeated set_fmt() for the same exact format must not collapse it back to
+	 * the first mode in the table.
+	 */
+	if (imx415->cur_mode &&
+	    imx415_mode_has_format(imx415->cur_mode, framefmt->code,
+				     framefmt->width, framefmt->height)) {
+		dev_info(&imx415->client->dev,
+			 "%s: keep current exact %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
+			 __func__, imx415->cur_mode->width, imx415->cur_mode->height,
+			 imx415->cur_mode->bus_fmt, imx415->cur_mode->hdr_mode,
+			 imx415->cur_mode->max_fps.denominator,
+			 imx415->cur_mode->max_fps.numerator,
+			 imx415->cur_mode->hts_def);
+		return imx415->cur_mode;
+	}
+
+	/*
+	 * First require exact width/height/code. Among duplicate FPS variants pick
+	 * the one closest to the current FPS, so size changes preserve the selected
+	 * speed as much as possible until userspace calls s_frame_interval().
+	 */
 	for (i = 0; i < imx415->cfg_num; i++) {
-		if (!imx415_mode_has_code(&imx415->supported_modes[i], framefmt->code))
+		candidate = &imx415->supported_modes[i];
+
+		if (!imx415_mode_has_format(candidate, framefmt->code,
+					    framefmt->width, framefmt->height))
+			continue;
+		if (candidate->hdr_mode != cur_hdr)
 			continue;
 
-		dist = imx415_get_reso_dist(&imx415->supported_modes[i], framefmt);
-		if (cur_best_fit_dist == -1 || dist < cur_best_fit_dist) {
-			cur_best_fit_dist = dist;
-			mode = &imx415->supported_modes[i];
+		if (!mode || imx415_fps_distance(candidate, &keep_fps) < best_fps_dist) {
+			mode = candidate;
+			best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
+		}
+	}
+
+	if (mode) {
+		dev_info(&imx415->client->dev,
+			 "%s: exact fit %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
+			 __func__, mode->width, mode->height, mode->bus_fmt,
+			 mode->hdr_mode, mode->max_fps.denominator,
+			 mode->max_fps.numerator, mode->hts_def);
+		return mode;
+	}
+
+	/* Exact format, any HDR fallback. */
+	best_fps_dist = ~0ULL;
+	for (i = 0; i < imx415->cfg_num; i++) {
+		candidate = &imx415->supported_modes[i];
+
+		if (!imx415_mode_has_format(candidate, framefmt->code,
+					    framefmt->width, framefmt->height))
+			continue;
+
+		if (!mode || imx415_fps_distance(candidate, &keep_fps) < best_fps_dist) {
+			mode = candidate;
+			best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
+		}
+	}
+
+	if (mode) {
+		dev_info(&imx415->client->dev,
+			 "%s: exact fallback %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
+			 __func__, mode->width, mode->height, mode->bus_fmt,
+			 mode->hdr_mode, mode->max_fps.denominator,
+			 mode->max_fps.numerator, mode->hts_def);
+		return mode;
+	}
+
+	/* Last resort: nearest resolution with requested code and current HDR. */
+	best_fps_dist = ~0ULL;
+	for (i = 0; i < imx415->cfg_num; i++) {
+		candidate = &imx415->supported_modes[i];
+
+		if (!imx415_mode_has_code(candidate, framefmt->code))
+			continue;
+		if (candidate->hdr_mode != cur_hdr)
+			continue;
+
+		dist = imx415_get_reso_dist(candidate, framefmt);
+		if (best_res_dist == -1 || dist < best_res_dist ||
+		    (dist == best_res_dist &&
+		     imx415_fps_distance(candidate, &keep_fps) < best_fps_dist)) {
+			best_res_dist = dist;
+			best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
+			mode = candidate;
+		}
+	}
+
+	if (!mode) {
+		best_res_dist = -1;
+		best_fps_dist = ~0ULL;
+		for (i = 0; i < imx415->cfg_num; i++) {
+			candidate = &imx415->supported_modes[i];
+
+			if (!imx415_mode_has_code(candidate, framefmt->code))
+				continue;
+
+			dist = imx415_get_reso_dist(candidate, framefmt);
+			if (best_res_dist == -1 || dist < best_res_dist ||
+			    (dist == best_res_dist &&
+			     imx415_fps_distance(candidate, &keep_fps) < best_fps_dist)) {
+				best_res_dist = dist;
+				best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
+				mode = candidate;
+			}
 		}
 	}
 
@@ -1540,8 +1895,11 @@ imx415_find_best_fit(struct imx415 *imx415, struct v4l2_subdev_format *fmt)
 		mode = &imx415->supported_modes[0];
 
 	dev_info(&imx415->client->dev,
-		 "%s: best fit %dx%d hdr %d code 0x%x\n",
-		 __func__, mode->width, mode->height, mode->hdr_mode, mode->bus_fmt);
+		 "%s: nearest fit req %ux%u code 0x%x -> %ux%u hdr %u fps %u/%u hts 0x%x\n",
+		 __func__, framefmt->width, framefmt->height, framefmt->code,
+		 mode->width, mode->height, mode->hdr_mode,
+		 mode->max_fps.denominator, mode->max_fps.numerator,
+		 mode->hts_def);
 
 	return mode;
 }
@@ -1609,14 +1967,19 @@ static void imx415_change_mode(struct imx415 *imx415, const struct imx415_mode *
 	imx415->cur_mode = mode;
 	imx415->cur_vts = imx415->cur_mode->vts_def;
 	imx415->is_tline_init = false;
-	dev_info(&imx415->client->dev, "set fmt: cur_mode: %dx%d, hdr: %d, bpp: %d\n",
-		mode->width, mode->height, mode->hdr_mode, mode->bpp);
+	dev_info(&imx415->client->dev,
+		 "set fmt: cur_mode: %dx%d, hdr: %d, bpp: %d, fps: %u/%u, hts: 0x%x, vts: 0x%x, mipi_idx: %u, exp_def: %u\n",
+		 mode->width, mode->height, mode->hdr_mode, mode->bpp,
+		 mode->max_fps.denominator, mode->max_fps.numerator,
+		 mode->hts_def, mode->vts_def, mode->mipi_freq_idx,
+		 mode->exp_def);
 }
 
 static void imx415_update_controls(struct imx415 *imx415,
 				   const struct imx415_mode *mode)
 {
 	s64 h_blank, vblank_def, vblank_min;
+	s64 exposure_max, exposure_def;
 	u64 pixel_rate = 0;
 	u8 lanes = imx415->bus_cfg.bus.mipi_csi2.num_data_lanes;
 
@@ -1631,6 +1994,29 @@ static void imx415_update_controls(struct imx415 *imx415,
 				 IMX415_VTS_MAX - mode->height,
 				 1, vblank_def);
 	__v4l2_ctrl_s_ctrl(imx415->vblank, vblank_def);
+
+	/*
+	 * The high-speed experimental modes were validated with EXP=128
+	 * (SHR0=VMAX-128). Do not leave the previous 4K30 exposure value
+	 * active, otherwise __v4l2_ctrl_handler_setup() overwrites SHR0 with
+	 * a near-frame-length exposure and the timing no longer matches tests.
+	 */
+	if (mode->hdr_mode == NO_HDR && imx415->exposure) {
+		exposure_max = mode->vts_def - 8;
+		exposure_def = mode->exp_def;
+		if (exposure_def < imx415->exposure->minimum)
+			exposure_def = imx415->exposure->minimum;
+		if (exposure_def > exposure_max)
+			exposure_def = exposure_max;
+
+		__v4l2_ctrl_modify_range(imx415->exposure,
+					 imx415->exposure->minimum,
+					 exposure_max,
+					 imx415->exposure->step,
+					 exposure_def);
+		__v4l2_ctrl_s_ctrl(imx415->exposure, exposure_def);
+	}
+
 	__v4l2_ctrl_s_ctrl(imx415->link_freq, mode->mipi_freq_idx);
 
 	pixel_rate = (u32)link_freq_items[mode->mipi_freq_idx] /
@@ -1809,6 +2195,12 @@ static int imx415_s_frame_interval(struct v4l2_subdev *sd,
 		mutex_unlock(&imx415->mutex);
 		return -EINVAL;
 	}
+
+	dev_info(&imx415->client->dev,
+		 "%s: selected %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
+		 __func__, mode->width, mode->height, mode->bus_fmt,
+		 mode->hdr_mode, mode->max_fps.denominator,
+		 mode->max_fps.numerator, mode->hts_def);
 
 	imx415_change_mode(imx415, mode);
 	imx415_update_controls(imx415, mode);
@@ -2695,6 +3087,11 @@ static int __imx415_start_stream(struct imx415 *imx415)
 	ret = __v4l2_ctrl_handler_setup(&imx415->ctrl_handler);
 	if (ret)
 		return ret;
+
+	/* Give the receiver/sensor a short settle window for 2376 Mbps modes. */
+	if (imx415->cur_mode->mipi_freq_idx == 4)
+		usleep_range(30000, 35000);
+
 	if (imx415->has_init_exp && imx415->cur_mode->hdr_mode != NO_HDR) {
 		imx415->rhs1_old = IMX415_RHS1_DEFAULT;
 		imx415->rhs2_old = IMX415_RHS2_DEFAULT;
