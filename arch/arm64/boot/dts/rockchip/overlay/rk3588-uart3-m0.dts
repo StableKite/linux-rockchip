@@ -7,6 +7,9 @@
 
 		__overlay__ {
 			status = "okay";
+			dmas = <&dmac0 12>, <&dmac0 13>;
+			dma-names = "tx", "rx";
+			pinctrl-names = "default";
 			pinctrl-0 = <&uart3m0_xfer>;
 		};
 	};
