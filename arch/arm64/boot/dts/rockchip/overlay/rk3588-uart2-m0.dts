@@ -15,6 +15,8 @@
 
 		__overlay__ {
 			status = "okay";
+			dmas = <&dmac0 10>, <&dmac0 11>;
+			dma-names = "tx", "rx";
 			pinctrl-0 = <&uart2m0_xfer>;
 		};
 	};
