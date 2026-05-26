@@ -189,6 +189,26 @@ struct regval {
 	u8 val;
 };
 
+#define IMX415_DEBUG_PROGRAM_MAX_OPS		512
+#define IMX415_DEBUG_PROGRAM_DELAY_MAX_MS	10000
+
+enum imx415_debug_program_policy {
+	IMX415_DEBUG_PROGRAM_OVERLAY_AFTER_CTRL = 0,
+	IMX415_DEBUG_PROGRAM_REPLACE_INIT = 1,
+};
+
+enum imx415_debug_program_op_type {
+	IMX415_DEBUG_PROGRAM_WRITE = 0,
+	IMX415_DEBUG_PROGRAM_DELAY = 1,
+};
+
+struct imx415_debug_program_op {
+	u16 addr;
+	u8 len;
+	u8 type;
+	u32 value;
+};
+
 struct imx415_mode {
 	u32 bus_fmt;
 	u32 width;
@@ -252,6 +272,44 @@ struct imx415 {
 	u32			pclk;
 	u32			tline;
 	bool			is_tline_init;
+
+	/*
+	 * Debug proxy state.  All knobs below are exported through sysfs on
+	 * the I2C device, e.g. /sys/bus/i2c/devices/<bus>-<addr>/debug_* .
+	 * They intentionally do not replace the V4L2/RKMODULE ABI; rkaiq still
+	 * sees a normal sensor subdev, while userspace can override what this
+	 * driver reports and what it writes to the sensor.
+	 */
+	bool			debug_enable;
+	bool			debug_manual_mode;
+	bool			debug_aiq_block_params;
+	bool			debug_aiq_block_stream;
+	bool			debug_skip_init_regs;
+	bool			debug_skip_ctrl_setup;
+	bool			debug_pm_hold;
+	bool			debug_sysfs_created;
+	struct imx415_mode	debug_mode;
+	const struct imx415_mode *debug_base_mode;
+	u16			debug_reg_addr;
+	u8			debug_reg_len;
+	u32			debug_reg_last;
+	unsigned long		debug_reg_ops;
+
+	/*
+	 * A userspace-staged register program.  Unlike debug_reg (which writes
+	 * immediately), this program is executed inside start_stream() while the
+	 * sensor is still in standby.  That makes mode bring-up look like a native
+	 * sensor start to the receiver and avoids hot PLL/MIPI retiming.
+	 */
+	bool			debug_program_enable;
+	bool			debug_program_committed;
+	u8			debug_program_policy;
+	u32			debug_program_count;
+	u32			debug_program_committed_count;
+	u32			debug_program_generation;
+	u32			debug_program_apply_count;
+	int			debug_program_last_ret;
+	struct imx415_debug_program_op debug_program[IMX415_DEBUG_PROGRAM_MAX_OPS];
 };
 
 static struct rkmodule_csi_dphy_param dcphy_param = {
@@ -687,172 +745,6 @@ static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_891M_reg
 	{REG_NULL, 0x00},
 };
 
-/*
- * Experimental linear 10-bit high-speed timing candidates.
- * These use the high-speed 2376 Mbps PHY/timing block, but keep the
- * all-pixel VMAX=0x08ca readout and select FPS by HMAX only.
- * EXP default is 128 lines, so SHR0 is programmed as VMAX - EXP = 0x084a.
- */
-static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax03c2_2376M_regs[] = {
-	{0x3020, 0x00},
-	{0x3021, 0x00},
-	{0x3022, 0x00},
-	{0x3024, 0xCA},
-	{0x3025, 0x08},
-	{0x3026, 0x00},
-	{0x3028, 0xC2},
-	{0x3029, 0x03},
-	{0x302C, 0x00},
-	{0x302D, 0x00},
-	{0x3033, 0x00},
-	{0x3050, 0x4A},
-	{0x3051, 0x08},
-	{0x3052, 0x00},
-	{0x3054, 0x19},
-	{0x3058, 0x3E},
-	{0x3060, 0x25},
-	{0x3064, 0x4A},
-	{0x30CF, 0x00},
-	{0x3118, 0x00},
-	{0x3119, 0x01},
-	{0x311A, 0xE0},
-	{0x3260, 0x01},
-	{0x400C, 0x01},
-	{0x4018, 0xE7},
-	{0x401A, 0x8F},
-	{0x401C, 0x8F},
-	{0x401E, 0x7F},
-	{0x401F, 0x02},
-	{0x4020, 0x97},
-	{0x4022, 0x0F},
-	{0x4023, 0x01},
-	{0x4024, 0x97},
-	{0x4026, 0xF7},
-	{0x4028, 0x7F},
-	{0x4074, 0x00},
-	{REG_NULL, 0x00},
-};
-
-static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax0389_2376M_regs[] = {
-	{0x3020, 0x00},
-	{0x3021, 0x00},
-	{0x3022, 0x00},
-	{0x3024, 0xCA},
-	{0x3025, 0x08},
-	{0x3026, 0x00},
-	{0x3028, 0x89},
-	{0x3029, 0x03},
-	{0x302C, 0x00},
-	{0x302D, 0x00},
-	{0x3033, 0x00},
-	{0x3050, 0x4A},
-	{0x3051, 0x08},
-	{0x3052, 0x00},
-	{0x3054, 0x19},
-	{0x3058, 0x3E},
-	{0x3060, 0x25},
-	{0x3064, 0x4A},
-	{0x30CF, 0x00},
-	{0x3118, 0x00},
-	{0x3119, 0x01},
-	{0x311A, 0xE0},
-	{0x3260, 0x01},
-	{0x400C, 0x01},
-	{0x4018, 0xE7},
-	{0x401A, 0x8F},
-	{0x401C, 0x8F},
-	{0x401E, 0x7F},
-	{0x401F, 0x02},
-	{0x4020, 0x97},
-	{0x4022, 0x0F},
-	{0x4023, 0x01},
-	{0x4024, 0x97},
-	{0x4026, 0xF7},
-	{0x4028, 0x7F},
-	{0x4074, 0x00},
-	{REG_NULL, 0x00},
-};
-
-static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax0358_2376M_regs[] = {
-	{0x3020, 0x00},
-	{0x3021, 0x00},
-	{0x3022, 0x00},
-	{0x3024, 0xCA},
-	{0x3025, 0x08},
-	{0x3026, 0x00},
-	{0x3028, 0x58},
-	{0x3029, 0x03},
-	{0x302C, 0x00},
-	{0x302D, 0x00},
-	{0x3033, 0x00},
-	{0x3050, 0x4A},
-	{0x3051, 0x08},
-	{0x3052, 0x00},
-	{0x3054, 0x19},
-	{0x3058, 0x3E},
-	{0x3060, 0x25},
-	{0x3064, 0x4A},
-	{0x30CF, 0x00},
-	{0x3118, 0x00},
-	{0x3119, 0x01},
-	{0x311A, 0xE0},
-	{0x3260, 0x01},
-	{0x400C, 0x01},
-	{0x4018, 0xE7},
-	{0x401A, 0x8F},
-	{0x401C, 0x8F},
-	{0x401E, 0x7F},
-	{0x401F, 0x02},
-	{0x4020, 0x97},
-	{0x4022, 0x0F},
-	{0x4023, 0x01},
-	{0x4024, 0x97},
-	{0x4026, 0xF7},
-	{0x4028, 0x7F},
-	{0x4074, 0x00},
-	{REG_NULL, 0x00},
-};
-
-static __maybe_unused const struct regval imx415_linear_10bit_3864x2192_hmax0357_2376M_regs[] = {
-	{0x3020, 0x00},
-	{0x3021, 0x00},
-	{0x3022, 0x00},
-	{0x3024, 0xCA},
-	{0x3025, 0x08},
-	{0x3026, 0x00},
-	{0x3028, 0x57},
-	{0x3029, 0x03},
-	{0x302C, 0x00},
-	{0x302D, 0x00},
-	{0x3033, 0x00},
-	{0x3050, 0x4A},
-	{0x3051, 0x08},
-	{0x3052, 0x00},
-	{0x3054, 0x19},
-	{0x3058, 0x3E},
-	{0x3060, 0x25},
-	{0x3064, 0x4A},
-	{0x30CF, 0x00},
-	{0x3118, 0x00},
-	{0x3119, 0x01},
-	{0x311A, 0xE0},
-	{0x3260, 0x01},
-	{0x400C, 0x01},
-	{0x4018, 0xE7},
-	{0x401A, 0x8F},
-	{0x401C, 0x8F},
-	{0x401E, 0x7F},
-	{0x401F, 0x02},
-	{0x4020, 0x97},
-	{0x4022, 0x0F},
-	{0x4023, 0x01},
-	{0x4024, 0x97},
-	{0x4026, 0xF7},
-	{0x4028, 0x7F},
-	{0x4074, 0x00},
-	{REG_NULL, 0x00},
-};
-
 static __maybe_unused const struct regval imx415_linear_12bit_1932x1096_594M_regs[] = {
 	{0x3020, 0x01},
 	{0x3021, 0x01},
@@ -1273,46 +1165,6 @@ static const struct imx415_mode supported_modes[] = {
 		.xvclk = IMX415_XVCLK_FREQ_37M,
 	},
 	{
-		/* Experimental 4K ~89.95 fps candidate, HMAX=0x0358. */
-		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.width = 3864,
-		.height = 2192,
-		.max_fps = {
-			.numerator = 10000,
-			.denominator = 899500,
-		},
-		.exp_def = 128,
-		.hts_def = 0x0358 * IMX415_4LANES * 2,
-		.vts_def = 0x08ca,
-		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_hmax0358_2376M_regs,
-		.hdr_mode = NO_HDR,
-		.mipi_freq_idx = 4,
-		.bpp = 10,
-		.vc[PAD0] = 0,
-		.xvclk = IMX415_XVCLK_FREQ_37M,
-	},
-	{
-		/* Experimental 4K true-90 candidate, HMAX=0x0357. */
-		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.width = 3864,
-		.height = 2192,
-		.max_fps = {
-			.numerator = 10000,
-			.denominator = 900600,
-		},
-		.exp_def = 128,
-		.hts_def = 0x0357 * IMX415_4LANES * 2,
-		.vts_def = 0x08ca,
-		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_hmax0357_2376M_regs,
-		.hdr_mode = NO_HDR,
-		.mipi_freq_idx = 4,
-		.bpp = 10,
-		.vc[PAD0] = 0,
-		.xvclk = IMX415_XVCLK_FREQ_37M,
-	},
-	{
 		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
 		.width = 3864,
 		.height = 2192,
@@ -1388,86 +1240,6 @@ static const struct imx415_mode supported_modes[] = {
 		.vc[PAD1] = 1,//M->csi wr0
 		.vc[PAD2] = 0,//L->csi wr0
 		.vc[PAD3] = 2,//S->csi wr2
-		.xvclk = IMX415_XVCLK_FREQ_37M,
-	},
-	{
-		/* Stable FullHD/all-pixel high-speed candidate, HMAX=0x03c2. */
-		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.width = 1944,
-		.height = 1097,
-		.max_fps = {
-			.numerator = 10000,
-			.denominator = 800400,
-		},
-		.exp_def = 128,
-		.hts_def = 0x03c2 * IMX415_4LANES * 2,
-		.vts_def = 0x08ca,
-		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_hmax03c2_2376M_regs,
-		.hdr_mode = NO_HDR,
-		.mipi_freq_idx = 4,
-		.bpp = 10,
-		.vc[PAD0] = 0,
-		.xvclk = IMX415_XVCLK_FREQ_37M,
-	},
-	{
-		/* Preferred stable FullHD/all-pixel high-speed candidate, HMAX=0x0389. */
-		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.width = 1944,
-		.height = 1097,
-		.max_fps = {
-			.numerator = 10000,
-			.denominator = 850800,
-		},
-		.exp_def = 128,
-		.hts_def = 0x0389 * IMX415_4LANES * 2,
-		.vts_def = 0x08ca,
-		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_hmax0389_2376M_regs,
-		.hdr_mode = NO_HDR,
-		.mipi_freq_idx = 4,
-		.bpp = 10,
-		.vc[PAD0] = 0,
-		.xvclk = IMX415_XVCLK_FREQ_37M,
-	},
-	{
-		/* Experimental FullHD/all-pixel ~89.95 fps candidate, HMAX=0x0358. */
-		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.width = 1944,
-		.height = 1097,
-		.max_fps = {
-			.numerator = 10000,
-			.denominator = 899500,
-		},
-		.exp_def = 128,
-		.hts_def = 0x0358 * IMX415_4LANES * 2,
-		.vts_def = 0x08ca,
-		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_hmax0358_2376M_regs,
-		.hdr_mode = NO_HDR,
-		.mipi_freq_idx = 4,
-		.bpp = 10,
-		.vc[PAD0] = 0,
-		.xvclk = IMX415_XVCLK_FREQ_37M,
-	},
-	{
-		/* Experimental FullHD/all-pixel true-90 candidate, HMAX=0x0357. */
-		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
-		.width = 1944,
-		.height = 1097,
-		.max_fps = {
-			.numerator = 10000,
-			.denominator = 900600,
-		},
-		.exp_def = 128,
-		.hts_def = 0x0357 * IMX415_4LANES * 2,
-		.vts_def = 0x08ca,
-		.global_reg_list = imx415_global_10bit_3864x2192_regs,
-		.reg_list = imx415_linear_10bit_3864x2192_hmax0357_2376M_regs,
-		.hdr_mode = NO_HDR,
-		.mipi_freq_idx = 4,
-		.bpp = 10,
-		.vc[PAD0] = 0,
 		.xvclk = IMX415_XVCLK_FREQ_37M,
 	},
 	{
@@ -1725,6 +1497,879 @@ static int imx415_read_reg(struct i2c_client *client, u16 reg, unsigned int len,
 	return 0;
 }
 
+
+/* --------------------------------------------------------------------------
+ * Runtime debug proxy
+ * --------------------------------------------------------------------------
+ * This block is deliberately kept as a thin proxy layer: it does not add a new
+ * private ioctl ABI and it does not make rkaiq aware of anything special.  rkaiq
+ * continues to use the normal V4L2 controls and RKMODULE ioctls; sysfs toggles
+ * below decide whether those writes are allowed to reach the hardware, while
+ * reads are served from the driver's current/overridden state.
+ */
+
+static void imx415_get_pclk_and_tline(struct imx415 *imx415);
+
+static int imx415_debug_pm_get(struct imx415 *imx415)
+{
+	int ret;
+
+	if (!imx415->debug_enable)
+		return -EPERM;
+
+	ret = pm_runtime_get_sync(&imx415->client->dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(&imx415->client->dev);
+		return ret;
+	}
+
+	return 0;
+}
+
+static void imx415_debug_pm_put(struct imx415 *imx415)
+{
+	pm_runtime_put(&imx415->client->dev);
+}
+
+static void imx415_debug_apply_mode_controls_locked(struct imx415 *imx415)
+{
+	const struct imx415_mode *mode = imx415->cur_mode;
+	s64 h_blank, vblank_def, vblank_min;
+	u64 pixel_rate;
+	u32 bpp;
+	u8 lanes = imx415->bus_cfg.bus.mipi_csi2.num_data_lanes;
+
+	if (!mode || !imx415->hblank || !imx415->vblank ||
+	    !imx415->link_freq || !imx415->pixel_rate)
+		return;
+
+	h_blank = (mode->hts_def > mode->width) ?
+		(mode->hts_def - mode->width) : 0;
+	vblank_def = (mode->vts_def > mode->height) ?
+		(mode->vts_def - mode->height) : 1;
+	/* VMAX >= (PIX_VWIDTH / 2) + 46 = height + 46 */
+	vblank_min = 46;
+	if (vblank_def < vblank_min)
+		vblank_def = vblank_min;
+
+	__v4l2_ctrl_modify_range(imx415->hblank, h_blank, h_blank, 1, h_blank);
+	__v4l2_ctrl_modify_range(imx415->vblank, vblank_min,
+			       IMX415_VTS_MAX - mode->height, 1, vblank_def);
+	__v4l2_ctrl_s_ctrl(imx415->vblank, vblank_def);
+
+	if (mode->mipi_freq_idx < ARRAY_SIZE(link_freq_items)) {
+		__v4l2_ctrl_s_ctrl(imx415->link_freq, mode->mipi_freq_idx);
+		bpp = mode->bpp ? mode->bpp : 1;
+		pixel_rate = (u32)link_freq_items[mode->mipi_freq_idx] /
+			     bpp * 2 * lanes;
+		__v4l2_ctrl_s_ctrl_int64(imx415->pixel_rate, pixel_rate);
+	}
+
+	imx415->cur_vts = mode->vts_def;
+	imx415->is_tline_init = false;
+	imx415_get_pclk_and_tline(imx415);
+}
+
+#define IMX415_DEBUG_BOOL_ATTR(_name, _field)\
+static ssize_t _name##_show(struct device *dev,\
+				    struct device_attribute *attr, char *buf)\
+{\
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));\
+	struct imx415 *imx415 = to_imx415(sd);\
+\
+	return scnprintf(buf, PAGE_SIZE, "%u\n", imx415->_field ? 1 : 0);\
+}\
+static ssize_t _name##_store(struct device *dev,\
+				     struct device_attribute *attr,\
+				     const char *buf, size_t count)\
+{\
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));\
+	struct imx415 *imx415 = to_imx415(sd);\
+	bool val;\
+	int ret;\
+\
+	ret = kstrtobool(buf, &val);\
+	if (ret)\
+		return ret;\
+\
+	mutex_lock(&imx415->mutex);\
+	imx415->_field = val;\
+	mutex_unlock(&imx415->mutex);\
+\
+	return count;\
+}\
+static DEVICE_ATTR_RW(_name)
+
+IMX415_DEBUG_BOOL_ATTR(debug_enable, debug_enable);
+IMX415_DEBUG_BOOL_ATTR(debug_aiq_block_params, debug_aiq_block_params);
+IMX415_DEBUG_BOOL_ATTR(debug_aiq_block_stream, debug_aiq_block_stream);
+IMX415_DEBUG_BOOL_ATTR(debug_skip_init_regs, debug_skip_init_regs);
+IMX415_DEBUG_BOOL_ATTR(debug_skip_ctrl_setup, debug_skip_ctrl_setup);
+
+static ssize_t debug_pm_hold_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", imx415->debug_pm_hold ? 1 : 0);
+}
+
+static ssize_t debug_pm_hold_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	bool val;
+	int ret = 0;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+
+	if (!imx415->debug_enable)
+		return -EPERM;
+
+	mutex_lock(&imx415->mutex);
+	if (val && !imx415->debug_pm_hold) {
+		ret = pm_runtime_get_sync(&imx415->client->dev);
+		if (ret < 0) {
+			pm_runtime_put_noidle(&imx415->client->dev);
+			mutex_unlock(&imx415->mutex);
+			return ret;
+		}
+		imx415->debug_pm_hold = true;
+	} else if (!val && imx415->debug_pm_hold) {
+		imx415->debug_pm_hold = false;
+		pm_runtime_put(&imx415->client->dev);
+	}
+	mutex_unlock(&imx415->mutex);
+
+	return count;
+}
+static DEVICE_ATTR_RW(debug_pm_hold);
+
+static int imx415_debug_exec_one(struct imx415 *imx415, char *cmd)
+{
+	char op[16];
+	unsigned int addr = 0, len = 1, val = 0, mask = 0, ms = 0;
+	int n, ret = 0;
+	char *eq;
+
+	cmd = strim(cmd);
+	if (!cmd || !*cmd || *cmd == '#')
+		return 0;
+
+	eq = strchr(cmd, '=');
+	if (eq) {
+		*eq = '\0';
+		ret = kstrtouint(strim(cmd), 0, &addr);
+		if (ret)
+			return ret;
+		ret = kstrtouint(strim(eq + 1), 0, &val);
+		if (ret)
+			return ret;
+		imx415->debug_reg_addr = addr;
+		imx415->debug_reg_len = 1;
+		imx415->debug_reg_last = val & 0xff;
+		imx415->debug_reg_ops++;
+		return imx415_write_reg(imx415->client, addr, IMX415_REG_VALUE_08BIT,
+					      val & 0xff);
+	}
+
+	n = sscanf(cmd, "%15s %x %u %x", op, &addr, &len, &val);
+	if (n <= 0)
+		return -EINVAL;
+
+	if (!strcmp(op, "r") || !strcmp(op, "read")) {
+		if (n < 2)
+			return -EINVAL;
+		if (n < 3)
+			len = IMX415_REG_VALUE_08BIT;
+		if (len < 1 || len > 4)
+			return -EINVAL;
+		ret = imx415_read_reg(imx415->client, addr, len, &val);
+		if (!ret) {
+			imx415->debug_reg_addr = addr;
+			imx415->debug_reg_len = len;
+			imx415->debug_reg_last = val;
+			imx415->debug_reg_ops++;
+		}
+		return ret;
+	}
+
+	if (!strcmp(op, "w") || !strcmp(op, "write")) {
+		if (n == 3) {
+			val = len;
+			len = IMX415_REG_VALUE_08BIT;
+		} else if (n < 4) {
+			return -EINVAL;
+		}
+		if (len < 1 || len > 4)
+			return -EINVAL;
+		ret = imx415_write_reg(imx415->client, addr, len, val);
+		if (!ret) {
+			imx415->debug_reg_addr = addr;
+			imx415->debug_reg_len = len;
+			imx415->debug_reg_last = val;
+			imx415->debug_reg_ops++;
+		}
+		return ret;
+	}
+
+	if (!strcmp(op, "w8")) {
+		if (sscanf(cmd, "%15s %x %x", op, &addr, &val) != 3)
+			return -EINVAL;
+		ret = imx415_write_reg(imx415->client, addr, IMX415_REG_VALUE_08BIT,
+					      val & 0xff);
+		if (!ret) {
+			imx415->debug_reg_addr = addr;
+			imx415->debug_reg_len = IMX415_REG_VALUE_08BIT;
+			imx415->debug_reg_last = val & 0xff;
+			imx415->debug_reg_ops++;
+		}
+		return ret;
+	}
+
+	if (!strcmp(op, "w16")) {
+		if (sscanf(cmd, "%15s %x %x", op, &addr, &val) != 3)
+			return -EINVAL;
+		ret = imx415_write_reg(imx415->client, addr, IMX415_REG_VALUE_16BIT,
+					      val & 0xffff);
+		if (!ret) {
+			imx415->debug_reg_addr = addr;
+			imx415->debug_reg_len = IMX415_REG_VALUE_16BIT;
+			imx415->debug_reg_last = val & 0xffff;
+			imx415->debug_reg_ops++;
+		}
+		return ret;
+	}
+
+	if (!strcmp(op, "w24")) {
+		if (sscanf(cmd, "%15s %x %x", op, &addr, &val) != 3)
+			return -EINVAL;
+		ret = imx415_write_reg(imx415->client, addr, IMX415_REG_VALUE_24BIT,
+					      val & 0xffffff);
+		if (!ret) {
+			imx415->debug_reg_addr = addr;
+			imx415->debug_reg_len = IMX415_REG_VALUE_24BIT;
+			imx415->debug_reg_last = val & 0xffffff;
+			imx415->debug_reg_ops++;
+		}
+		return ret;
+	}
+
+	if (!strcmp(op, "mw") || !strcmp(op, "mask")) {
+		if (sscanf(cmd, "%15s %x %x %x", op, &addr, &mask, &val) != 4)
+			return -EINVAL;
+		ret = imx415_read_reg(imx415->client, addr, IMX415_REG_VALUE_08BIT,
+					     &len);
+		if (ret)
+			return ret;
+		val = (len & ~mask) | (val & mask);
+		ret = imx415_write_reg(imx415->client, addr, IMX415_REG_VALUE_08BIT,
+					      val & 0xff);
+		if (!ret) {
+			imx415->debug_reg_addr = addr;
+			imx415->debug_reg_len = IMX415_REG_VALUE_08BIT;
+			imx415->debug_reg_last = val & 0xff;
+			imx415->debug_reg_ops++;
+		}
+		return ret;
+	}
+
+	if (!strcmp(op, "sleep") || !strcmp(op, "delay")) {
+		if (sscanf(cmd, "%15s %u", op, &ms) != 2)
+			return -EINVAL;
+		usleep_range(ms * 1000, ms * 1000 + 500);
+		return 0;
+	}
+
+	if (!strcmp(op, "stream")) {
+		if (sscanf(cmd, "%15s %u", op, &val) != 2)
+			return -EINVAL;
+		return imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
+					      IMX415_REG_VALUE_08BIT,
+					      val ? IMX415_MODE_STREAMING :
+					      IMX415_MODE_SW_STANDBY);
+	}
+
+	if (!strcmp(op, "group")) {
+		if (sscanf(cmd, "%15s %u", op, &val) != 2)
+			return -EINVAL;
+		return imx415_write_reg(imx415->client, IMX415_GROUP_HOLD_REG,
+					      IMX415_REG_VALUE_08BIT,
+					      val ? IMX415_GROUP_HOLD_START :
+					      IMX415_GROUP_HOLD_END);
+	}
+
+	return -EINVAL;
+}
+
+static ssize_t debug_reg_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+
+	return scnprintf(buf, PAGE_SIZE,
+		"last_addr=0x%04x last_len=%u last_val=0x%08x ops=%lu\n"
+		"usage:\n"
+		"  echo 1 > debug_enable\n"
+		"  echo 'r 0x3000 1' > debug_reg ; cat debug_reg\n"
+		"  echo 'w 0x3000 1 0x00' > debug_reg\n"
+		"  echo 'w8 0x3000 0x01' > debug_reg\n"
+		"  echo 'mw 0x3030 0x03 0x01' > debug_reg\n"
+		"  echo 'group 1; w8 0x3090 0x10; group 0' > debug_reg\n",
+		imx415->debug_reg_addr, imx415->debug_reg_len,
+		imx415->debug_reg_last, imx415->debug_reg_ops);
+}
+
+static ssize_t debug_reg_store(struct device *dev,
+			       struct device_attribute *attr,
+			       const char *buf, size_t count)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	char *tmp, *p, *line;
+	int ret;
+
+	ret = imx415_debug_pm_get(imx415);
+	if (ret)
+		return ret;
+
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp) {
+		imx415_debug_pm_put(imx415);
+		return -ENOMEM;
+	}
+
+	mutex_lock(&imx415->mutex);
+	p = tmp;
+	while ((line = strsep(&p, "\n;")) != NULL) {
+		ret = imx415_debug_exec_one(imx415, line);
+		if (ret)
+			break;
+	}
+	mutex_unlock(&imx415->mutex);
+
+	kfree(tmp);
+	imx415_debug_pm_put(imx415);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_reg);
+
+static const char *imx415_debug_program_policy_name(u8 policy)
+{
+	if (policy == IMX415_DEBUG_PROGRAM_REPLACE_INIT)
+		return "replace_init";
+	return "overlay_after_ctrl";
+}
+
+static void imx415_debug_program_invalidate_locked(struct imx415 *imx415)
+{
+	imx415->debug_program_enable = false;
+	imx415->debug_program_committed = false;
+	imx415->debug_program_committed_count = 0;
+}
+
+static int imx415_debug_program_append_write_locked(struct imx415 *imx415,
+						     u32 addr, u8 len, u32 value)
+{
+	struct imx415_debug_program_op *op;
+	u32 max_value;
+
+	if (addr > 0xffff || addr == IMX415_REG_CTRL_MODE ||
+	    addr == REG_NULL || addr == REG_DELAY)
+		return -EINVAL;
+	if (len < IMX415_REG_VALUE_08BIT || len > IMX415_REG_VALUE_24BIT)
+		return -EINVAL;
+	max_value = (len == IMX415_REG_VALUE_08BIT) ? 0xff :
+		    (len == IMX415_REG_VALUE_16BIT) ? 0xffff : 0xffffff;
+	if (value > max_value)
+		return -ERANGE;
+	if (imx415->debug_program_count >= IMX415_DEBUG_PROGRAM_MAX_OPS)
+		return -ENOSPC;
+
+	op = &imx415->debug_program[imx415->debug_program_count++];
+	op->addr = addr;
+	op->len = len;
+	op->type = IMX415_DEBUG_PROGRAM_WRITE;
+	op->value = value;
+	imx415_debug_program_invalidate_locked(imx415);
+	return 0;
+}
+
+static int imx415_debug_program_append_delay_locked(struct imx415 *imx415,
+						     u32 delay_ms)
+{
+	struct imx415_debug_program_op *op;
+
+	if (!delay_ms || delay_ms > IMX415_DEBUG_PROGRAM_DELAY_MAX_MS)
+		return -ERANGE;
+	if (imx415->debug_program_count >= IMX415_DEBUG_PROGRAM_MAX_OPS)
+		return -ENOSPC;
+
+	op = &imx415->debug_program[imx415->debug_program_count++];
+	op->addr = 0;
+	op->len = 0;
+	op->type = IMX415_DEBUG_PROGRAM_DELAY;
+	op->value = delay_ms;
+	imx415_debug_program_invalidate_locked(imx415);
+	return 0;
+}
+
+static int imx415_debug_program_exec_locked(struct imx415 *imx415, char *cmd)
+{
+	char action[16];
+	char arg[32];
+	u32 addr, value;
+
+	cmd = strim(cmd);
+	if (!*cmd)
+		return 0;
+
+	if (sysfs_streq(cmd, "clear")) {
+		memset(imx415->debug_program, 0, sizeof(imx415->debug_program));
+		imx415->debug_program_count = 0;
+		imx415->debug_program_policy =
+			IMX415_DEBUG_PROGRAM_OVERLAY_AFTER_CTRL;
+		imx415_debug_program_invalidate_locked(imx415);
+		return 0;
+	}
+
+	if (sysfs_streq(cmd, "commit")) {
+		if (!imx415->debug_program_count)
+			return -EINVAL;
+		imx415->debug_program_committed_count =
+			imx415->debug_program_count;
+		imx415->debug_program_committed = true;
+		imx415->debug_program_generation++;
+		return 0;
+	}
+
+	if (sscanf(cmd, "%15s %31s", action, arg) == 2 &&
+	    !strcmp(action, "policy")) {
+		if (!strcmp(arg, "overlay_after_ctrl"))
+			imx415->debug_program_policy =
+				IMX415_DEBUG_PROGRAM_OVERLAY_AFTER_CTRL;
+		else if (!strcmp(arg, "replace_init"))
+			imx415->debug_program_policy =
+				IMX415_DEBUG_PROGRAM_REPLACE_INIT;
+		else
+			return -EINVAL;
+		imx415_debug_program_invalidate_locked(imx415);
+		return 0;
+	}
+
+	if (sscanf(cmd, "%15s %u", action, &value) == 2 &&
+	    !strcmp(action, "enable")) {
+		if (value > 1)
+			return -EINVAL;
+		if (value && (!imx415->debug_program_committed ||
+		    imx415->debug_program_committed_count !=
+		    imx415->debug_program_count))
+			return -EINVAL;
+		imx415->debug_program_enable = !!value;
+		return 0;
+	}
+
+	if (sscanf(cmd, "%15s %31s %u", action, arg, &value) == 3 &&
+	    !strcmp(action, "append") && !strcmp(arg, "delay"))
+		return imx415_debug_program_append_delay_locked(imx415, value);
+
+	if (sscanf(cmd, "%15s %31s %x %x", action, arg, &addr, &value) == 4 &&
+	    !strcmp(action, "append")) {
+		if (!strcmp(arg, "w8"))
+			return imx415_debug_program_append_write_locked(imx415,
+				addr, IMX415_REG_VALUE_08BIT, value);
+		if (!strcmp(arg, "w16"))
+			return imx415_debug_program_append_write_locked(imx415,
+				addr, IMX415_REG_VALUE_16BIT, value);
+		if (!strcmp(arg, "w24"))
+			return imx415_debug_program_append_write_locked(imx415,
+				addr, IMX415_REG_VALUE_24BIT, value);
+	}
+
+	return -EINVAL;
+}
+
+static ssize_t debug_program_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	ssize_t len = 0;
+	u32 i;
+
+	mutex_lock(&imx415->mutex);
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+		"enabled=%u committed=%u policy=%s count=%u committed_count=%u generation=%u apply_count=%u last_ret=%d streaming=%u\n"
+		"write commands (separate by newline or semicolon): clear | policy overlay_after_ctrl|replace_init | append w8 <addr> <val> | append w16 <addr> <val> | append w24 <addr> <val> | append delay <ms> | commit | enable 0|1\n",
+		imx415->debug_program_enable ? 1 : 0,
+		imx415->debug_program_committed ? 1 : 0,
+		imx415_debug_program_policy_name(imx415->debug_program_policy),
+		imx415->debug_program_count,
+		imx415->debug_program_committed_count,
+		imx415->debug_program_generation,
+		imx415->debug_program_apply_count,
+		imx415->debug_program_last_ret,
+		imx415->streaming ? 1 : 0);
+
+	for (i = 0; i < imx415->debug_program_count &&
+	     len < PAGE_SIZE - 80; i++) {
+		const struct imx415_debug_program_op *op =
+			&imx415->debug_program[i];
+
+		if (op->type == IMX415_DEBUG_PROGRAM_DELAY)
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+					 "%u: delay %u\n", i, op->value);
+		else
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+					 "%u: w%u 0x%04x 0x%08x\n",
+					 i, op->len * 8, op->addr, op->value);
+	}
+	if (i < imx415->debug_program_count)
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+				 "... dump truncated at sysfs PAGE_SIZE; count=%u\n",
+				 imx415->debug_program_count);
+	mutex_unlock(&imx415->mutex);
+	return len;
+}
+
+static ssize_t debug_program_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	char *tmp, *p, *line;
+	int ret = 0;
+
+	if (!imx415->debug_enable)
+		return -EPERM;
+
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	mutex_lock(&imx415->mutex);
+	if (imx415->streaming) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	p = tmp;
+	while ((line = strsep(&p, "\n;")) != NULL) {
+		ret = imx415_debug_program_exec_locked(imx415, line);
+		if (ret)
+			break;
+	}
+unlock:
+	mutex_unlock(&imx415->mutex);
+	kfree(tmp);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_program);
+
+static ssize_t debug_mode_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	const struct imx415_mode *mode = imx415->cur_mode;
+	ssize_t len = 0;
+	u32 i;
+
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+		"manual=%u current: %ux%u code=0x%08x hdr=%u bpp=%u hts=%u vts=%u exp_def=%u freq_idx=%u fps=%u/%u vc=%u,%u,%u,%u xvclk=%u\n",
+		imx415->debug_manual_mode ? 1 : 0,
+		mode->width, mode->height, mode->bus_fmt, mode->hdr_mode,
+		mode->bpp, mode->hts_def, mode->vts_def, mode->exp_def,
+		mode->mipi_freq_idx, mode->max_fps.numerator,
+		mode->max_fps.denominator, mode->vc[PAD0], mode->vc[PAD1],
+		mode->vc[PAD2], mode->vc[PAD3], mode->xvclk);
+	len += scnprintf(buf + len, PAGE_SIZE - len,
+		"write: clear | index=<n> | width=<n> height=<n> code=<hex> hdr=<n> bpp=<n> hts=<n> vts=<n> exp=<n> freq=<n> fps_num=<n> fps_den=<n> vc0=<n> vc1=<n> vc2=<n> vc3=<n> xvclk=<n>\n");
+	len += scnprintf(buf + len, PAGE_SIZE - len, "supported:\n");
+
+	for (i = 0; i < imx415->cfg_num && len < PAGE_SIZE - 96; i++) {
+		mode = &imx415->supported_modes[i];
+		len += scnprintf(buf + len, PAGE_SIZE - len,
+			"  %u: %ux%u code=0x%08x hdr=%u bpp=%u hts=%u vts=%u freq_idx=%u fps=%u/%u\n",
+			i, mode->width, mode->height, mode->bus_fmt,
+			mode->hdr_mode, mode->bpp, mode->hts_def,
+			mode->vts_def, mode->mipi_freq_idx,
+			mode->max_fps.numerator, mode->max_fps.denominator);
+	}
+
+	return len;
+}
+
+static int imx415_debug_mode_set_one(struct imx415 *imx415, char *key,
+					     char *val)
+{
+	u32 tmp;
+	int ret;
+
+	key = strim(key);
+	val = strim(val);
+
+	ret = kstrtouint(val, 0, &tmp);
+	if (ret)
+		return ret;
+
+	if (!strcmp(key, "index") || !strcmp(key, "base")) {
+		if (tmp >= imx415->cfg_num)
+			return -EINVAL;
+		imx415->debug_mode = imx415->supported_modes[tmp];
+		imx415->debug_base_mode = &imx415->supported_modes[tmp];
+		imx415->cur_mode = &imx415->debug_mode;
+		imx415->debug_manual_mode = true;
+		return 0;
+	}
+	if (!strcmp(key, "width"))
+		imx415->debug_mode.width = tmp;
+	else if (!strcmp(key, "height"))
+		imx415->debug_mode.height = tmp;
+	else if (!strcmp(key, "code") || !strcmp(key, "bus_fmt"))
+		imx415->debug_mode.bus_fmt = tmp;
+	else if (!strcmp(key, "hdr") || !strcmp(key, "hdr_mode"))
+		imx415->debug_mode.hdr_mode = tmp;
+	else if (!strcmp(key, "bpp"))
+		imx415->debug_mode.bpp = tmp ? tmp : imx415->debug_mode.bpp;
+	else if (!strcmp(key, "hts") || !strcmp(key, "hts_def"))
+		imx415->debug_mode.hts_def = tmp;
+	else if (!strcmp(key, "vts") || !strcmp(key, "vts_def"))
+		imx415->debug_mode.vts_def = tmp;
+	else if (!strcmp(key, "exp") || !strcmp(key, "exp_def"))
+		imx415->debug_mode.exp_def = tmp;
+	else if (!strcmp(key, "freq") || !strcmp(key, "freq_idx") ||
+		 !strcmp(key, "mipi_freq_idx")) {
+		if (tmp >= ARRAY_SIZE(link_freq_items))
+			return -EINVAL;
+		imx415->debug_mode.mipi_freq_idx = tmp;
+	} else if (!strcmp(key, "fps_num"))
+		imx415->debug_mode.max_fps.numerator = tmp ? tmp : 1;
+	else if (!strcmp(key, "fps_den"))
+		imx415->debug_mode.max_fps.denominator = tmp ? tmp : 1;
+	else if (!strcmp(key, "vc0"))
+		imx415->debug_mode.vc[PAD0] = tmp;
+	else if (!strcmp(key, "vc1"))
+		imx415->debug_mode.vc[PAD1] = tmp;
+	else if (!strcmp(key, "vc2"))
+		imx415->debug_mode.vc[PAD2] = tmp;
+	else if (!strcmp(key, "vc3"))
+		imx415->debug_mode.vc[PAD3] = tmp;
+	else if (!strcmp(key, "xvclk"))
+		imx415->debug_mode.xvclk = tmp;
+	else
+		return -EINVAL;
+
+	imx415->cur_mode = &imx415->debug_mode;
+	imx415->debug_manual_mode = true;
+	return 0;
+}
+
+static ssize_t debug_mode_store(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	char *tmp, *p, *tok, *eq;
+	int ret = 0;
+
+	if (!imx415->debug_enable)
+		return -EPERM;
+
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	mutex_lock(&imx415->mutex);
+	p = strim(tmp);
+	if (sysfs_streq(p, "clear")) {
+		imx415->cur_mode = imx415->debug_base_mode ?
+			imx415->debug_base_mode : &imx415->supported_modes[0];
+		imx415->debug_manual_mode = false;
+		imx415_debug_apply_mode_controls_locked(imx415);
+		goto out;
+	}
+
+	if (!imx415->debug_manual_mode) {
+		imx415->debug_mode = *imx415->cur_mode;
+		imx415->debug_base_mode = imx415->cur_mode;
+	}
+
+	p = tmp;
+	while ((tok = strsep(&p, " \t\n,")) != NULL) {
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		eq = strchr(tok, '=');
+		if (!eq) {
+			ret = -EINVAL;
+			break;
+		}
+		*eq = '\0';
+		ret = imx415_debug_mode_set_one(imx415, tok, eq + 1);
+		if (ret)
+			break;
+	}
+
+	if (!ret) {
+		if (!imx415->debug_mode.bpp)
+			imx415->debug_mode.bpp = 10;
+		if (!imx415->debug_mode.max_fps.numerator)
+			imx415->debug_mode.max_fps.numerator = 1;
+		if (!imx415->debug_mode.max_fps.denominator)
+			imx415->debug_mode.max_fps.denominator = 1;
+		imx415->cur_mode = &imx415->debug_mode;
+		imx415->debug_manual_mode = true;
+		imx415_debug_apply_mode_controls_locked(imx415);
+	}
+out:
+	mutex_unlock(&imx415->mutex);
+	kfree(tmp);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_mode);
+
+static ssize_t debug_exp_info_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+
+	return scnprintf(buf, PAGE_SIZE,
+		"exp0=%u exp1=%u exp2=%u gain0=%u gain1=%u gain2=%u vts=%u pclk=%u tline=%u\n"
+		"write: exp0=<n> exp1=<n> exp2=<n> gain0=<n> gain1=<n> gain2=<n> vts=<n> pclk=<n> tline=<n>\n",
+		imx415->cur_exposure[0], imx415->cur_exposure[1],
+		imx415->cur_exposure[2], imx415->cur_gain[0],
+		imx415->cur_gain[1], imx415->cur_gain[2],
+		imx415->cur_vts, imx415->pclk, imx415->tline);
+}
+
+static ssize_t debug_exp_info_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	char *tmp, *p, *tok, *eq, *key;
+	u32 val;
+	int ret = 0;
+
+	if (!imx415->debug_enable)
+		return -EPERM;
+
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+
+	mutex_lock(&imx415->mutex);
+	p = tmp;
+	while ((tok = strsep(&p, " \t\n,")) != NULL) {
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		eq = strchr(tok, '=');
+		if (!eq) {
+			ret = -EINVAL;
+			break;
+		}
+		*eq = '\0';
+		key = strim(tok);
+		ret = kstrtouint(strim(eq + 1), 0, &val);
+		if (ret)
+			break;
+
+		if (!strcmp(key, "exp0"))
+			imx415->cur_exposure[0] = val;
+		else if (!strcmp(key, "exp1"))
+			imx415->cur_exposure[1] = val;
+		else if (!strcmp(key, "exp2"))
+			imx415->cur_exposure[2] = val;
+		else if (!strcmp(key, "gain0"))
+			imx415->cur_gain[0] = val;
+		else if (!strcmp(key, "gain1"))
+			imx415->cur_gain[1] = val;
+		else if (!strcmp(key, "gain2"))
+			imx415->cur_gain[2] = val;
+		else if (!strcmp(key, "vts"))
+			imx415->cur_vts = val;
+		else if (!strcmp(key, "pclk"))
+			imx415->pclk = val;
+		else if (!strcmp(key, "tline"))
+			imx415->tline = val;
+		else {
+			ret = -EINVAL;
+			break;
+		}
+	}
+	mutex_unlock(&imx415->mutex);
+	kfree(tmp);
+
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_exp_info);
+
+static ssize_t debug_state_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(to_i2c_client(dev));
+	struct imx415 *imx415 = to_imx415(sd);
+	const struct imx415_mode *mode = imx415->cur_mode;
+
+	return scnprintf(buf, PAGE_SIZE,
+		"enable=%u aiq_block_params=%u aiq_block_stream=%u skip_init_regs=%u skip_ctrl_setup=%u pm_hold=%u streaming=%u power_on=%u manual_mode=%u\n"
+		"current=%ux%u code=0x%08x hdr=%u bpp=%u hts=%u vts=%u freq_idx=%u\n"
+		"program_enabled=%u program_committed=%u program_policy=%s program_ops=%u program_committed_ops=%u program_generation=%u program_apply_count=%u program_last_ret=%d\n"
+		"sysfs files: debug_enable debug_aiq_block_params debug_aiq_block_stream debug_skip_init_regs debug_skip_ctrl_setup debug_pm_hold debug_reg debug_mode debug_program debug_exp_info debug_state\n",
+		imx415->debug_enable ? 1 : 0,
+		imx415->debug_aiq_block_params ? 1 : 0,
+		imx415->debug_aiq_block_stream ? 1 : 0,
+		imx415->debug_skip_init_regs ? 1 : 0,
+		imx415->debug_skip_ctrl_setup ? 1 : 0,
+		imx415->debug_pm_hold ? 1 : 0,
+		imx415->streaming ? 1 : 0,
+		imx415->power_on ? 1 : 0,
+		imx415->debug_manual_mode ? 1 : 0,
+		mode->width, mode->height, mode->bus_fmt, mode->hdr_mode,
+		mode->bpp, mode->hts_def, mode->vts_def, mode->mipi_freq_idx,
+		imx415->debug_program_enable ? 1 : 0,
+		imx415->debug_program_committed ? 1 : 0,
+		imx415_debug_program_policy_name(imx415->debug_program_policy),
+		imx415->debug_program_count,
+		imx415->debug_program_committed_count,
+		imx415->debug_program_generation,
+		imx415->debug_program_apply_count,
+		imx415->debug_program_last_ret);
+}
+static DEVICE_ATTR_RO(debug_state);
+
+static struct attribute *imx415_debug_attrs[] = {
+	&dev_attr_debug_enable.attr,
+	&dev_attr_debug_aiq_block_params.attr,
+	&dev_attr_debug_aiq_block_stream.attr,
+	&dev_attr_debug_skip_init_regs.attr,
+	&dev_attr_debug_skip_ctrl_setup.attr,
+	&dev_attr_debug_pm_hold.attr,
+	&dev_attr_debug_reg.attr,
+	&dev_attr_debug_mode.attr,
+	&dev_attr_debug_program.attr,
+	&dev_attr_debug_exp_info.attr,
+	&dev_attr_debug_state.attr,
+	NULL,
+};
+
+static const struct attribute_group imx415_debug_attr_group = {
+	.attrs = imx415_debug_attrs,
+};
+
 static int imx415_get_reso_dist(const struct imx415_mode *mode,
 				struct v4l2_mbus_framefmt *framefmt)
 {
@@ -1732,227 +2377,27 @@ static int imx415_get_reso_dist(const struct imx415_mode *mode,
 	       abs(mode->height - framefmt->height);
 }
 
-static bool imx415_mode_has_code(const struct imx415_mode *mode, u32 code)
-{
-	/*
-	 * Some userspace tools pass code=0 when the textual mbus code was not
-	 * parsed. Treat it as a wildcard instead of silently falling back to 4K.
-	 */
-	return !code || mode->bus_fmt == code;
-}
-
-static bool imx415_mode_has_format(const struct imx415_mode *mode, u32 code,
-				   u32 width, u32 height)
-{
-	return imx415_mode_has_code(mode, code) &&
-	       mode->width == width &&
-	       mode->height == height;
-}
-
-static u64 imx415_fps_distance(const struct imx415_mode *mode,
-			       const struct v4l2_fract *interval)
-{
-	s64 delta;
-
-	if (!interval || !interval->numerator || !interval->denominator)
-		return 0;
-
-	delta = (s64)mode->max_fps.denominator * interval->numerator -
-		(s64)interval->denominator * mode->max_fps.numerator;
-
-	return delta < 0 ? -delta : delta;
-}
-
 static const struct imx415_mode *
 imx415_find_best_fit(struct imx415 *imx415, struct v4l2_subdev_format *fmt)
 {
 	struct v4l2_mbus_framefmt *framefmt = &fmt->format;
-	const struct imx415_mode *mode = NULL;
-	const struct imx415_mode *candidate;
-	struct v4l2_fract keep_fps = { 0 };
-	u64 best_fps_dist = ~0ULL;
 	int dist;
-	int best_res_dist = -1;
-	unsigned int i;
-	u32 cur_hdr = imx415->cur_mode ? imx415->cur_mode->hdr_mode : NO_HDR;
-
-	if (imx415->cur_mode)
-		keep_fps = imx415->cur_mode->max_fps;
-
-	/*
-	 * Several modes intentionally share width/height/code and differ only by
-	 * frame interval. If userspace selected one by s_frame_interval(), a later
-	 * repeated set_fmt() for the same exact format must not collapse it back to
-	 * the first mode in the table.
-	 */
-	if (imx415->cur_mode &&
-	    imx415_mode_has_format(imx415->cur_mode, framefmt->code,
-				     framefmt->width, framefmt->height)) {
-		dev_info(&imx415->client->dev,
-			 "%s: keep current exact %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
-			 __func__, imx415->cur_mode->width, imx415->cur_mode->height,
-			 imx415->cur_mode->bus_fmt, imx415->cur_mode->hdr_mode,
-			 imx415->cur_mode->max_fps.denominator,
-			 imx415->cur_mode->max_fps.numerator,
-			 imx415->cur_mode->hts_def);
-		return imx415->cur_mode;
-	}
-
-	/*
-	 * First require exact width/height/code. Among duplicate FPS variants pick
-	 * the one closest to the current FPS, so size changes preserve the selected
-	 * speed as much as possible until userspace calls s_frame_interval().
-	 */
-	for (i = 0; i < imx415->cfg_num; i++) {
-		candidate = &imx415->supported_modes[i];
-
-		if (!imx415_mode_has_format(candidate, framefmt->code,
-					    framefmt->width, framefmt->height))
-			continue;
-		if (candidate->hdr_mode != cur_hdr)
-			continue;
-
-		if (!mode || imx415_fps_distance(candidate, &keep_fps) < best_fps_dist) {
-			mode = candidate;
-			best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
-		}
-	}
-
-	if (mode) {
-		dev_info(&imx415->client->dev,
-			 "%s: exact fit %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
-			 __func__, mode->width, mode->height, mode->bus_fmt,
-			 mode->hdr_mode, mode->max_fps.denominator,
-			 mode->max_fps.numerator, mode->hts_def);
-		return mode;
-	}
-
-	/* Exact format, any HDR fallback. */
-	best_fps_dist = ~0ULL;
-	for (i = 0; i < imx415->cfg_num; i++) {
-		candidate = &imx415->supported_modes[i];
-
-		if (!imx415_mode_has_format(candidate, framefmt->code,
-					    framefmt->width, framefmt->height))
-			continue;
-
-		if (!mode || imx415_fps_distance(candidate, &keep_fps) < best_fps_dist) {
-			mode = candidate;
-			best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
-		}
-	}
-
-	if (mode) {
-		dev_info(&imx415->client->dev,
-			 "%s: exact fallback %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
-			 __func__, mode->width, mode->height, mode->bus_fmt,
-			 mode->hdr_mode, mode->max_fps.denominator,
-			 mode->max_fps.numerator, mode->hts_def);
-		return mode;
-	}
-
-	/* Last resort: nearest resolution with requested code and current HDR. */
-	best_fps_dist = ~0ULL;
-	for (i = 0; i < imx415->cfg_num; i++) {
-		candidate = &imx415->supported_modes[i];
-
-		if (!imx415_mode_has_code(candidate, framefmt->code))
-			continue;
-		if (candidate->hdr_mode != cur_hdr)
-			continue;
-
-		dist = imx415_get_reso_dist(candidate, framefmt);
-		if (best_res_dist == -1 || dist < best_res_dist ||
-		    (dist == best_res_dist &&
-		     imx415_fps_distance(candidate, &keep_fps) < best_fps_dist)) {
-			best_res_dist = dist;
-			best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
-			mode = candidate;
-		}
-	}
-
-	if (!mode) {
-		best_res_dist = -1;
-		best_fps_dist = ~0ULL;
-		for (i = 0; i < imx415->cfg_num; i++) {
-			candidate = &imx415->supported_modes[i];
-
-			if (!imx415_mode_has_code(candidate, framefmt->code))
-				continue;
-
-			dist = imx415_get_reso_dist(candidate, framefmt);
-			if (best_res_dist == -1 || dist < best_res_dist ||
-			    (dist == best_res_dist &&
-			     imx415_fps_distance(candidate, &keep_fps) < best_fps_dist)) {
-				best_res_dist = dist;
-				best_fps_dist = imx415_fps_distance(candidate, &keep_fps);
-				mode = candidate;
-			}
-		}
-	}
-
-	if (!mode)
-		mode = &imx415->supported_modes[0];
-
-	dev_info(&imx415->client->dev,
-		 "%s: nearest fit req %ux%u code 0x%x -> %ux%u hdr %u fps %u/%u hts 0x%x\n",
-		 __func__, framefmt->width, framefmt->height, framefmt->code,
-		 mode->width, mode->height, mode->hdr_mode,
-		 mode->max_fps.denominator, mode->max_fps.numerator,
-		 mode->hts_def);
-
-	return mode;
-}
-
-static const struct imx415_mode *
-imx415_find_mode_by_interval(struct imx415 *imx415, u32 code, u32 width,
-			     u32 height, u32 hdr_mode,
-			     const struct v4l2_fract *interval)
-{
-	const struct imx415_mode *mode = NULL;
-	u64 cur_err;
-	u64 best_err = ~0ULL;
+	int cur_best_fit = 0;
+	int cur_best_fit_dist = -1;
 	unsigned int i;
 
 	for (i = 0; i < imx415->cfg_num; i++) {
-		const struct imx415_mode *candidate = &imx415->supported_modes[i];
-
-		if (!imx415_mode_has_format(candidate, code, width, height))
-			continue;
-		if (candidate->hdr_mode != hdr_mode)
-			continue;
-
-		cur_err = abs((s64)candidate->max_fps.denominator * interval->numerator -
-			      (s64)interval->denominator *
-			      candidate->max_fps.numerator);
-		if (cur_err < best_err) {
-			best_err = cur_err;
-			mode = candidate;
+		dist = imx415_get_reso_dist(&imx415->supported_modes[i], framefmt);
+		if ((cur_best_fit_dist == -1 || dist < cur_best_fit_dist) &&
+			imx415->supported_modes[i].bus_fmt == framefmt->code) {
+			cur_best_fit_dist = dist;
+			cur_best_fit = i;
 		}
 	}
+	dev_info(&imx415->client->dev, "%s: cur_best_fit(%d)",
+		 __func__, cur_best_fit);
 
-	return mode;
-}
-
-static const struct imx415_mode *
-imx415_find_mode_by_hdr(struct imx415 *imx415, u32 code, u32 width, u32 height,
-		       u32 hdr_mode, const struct v4l2_fract *interval)
-{
-	const struct imx415_mode *mode;
-
-	mode = imx415_find_mode_by_interval(imx415, code, width, height,
-					 hdr_mode, interval);
-	if (mode)
-		return mode;
-
-	for (mode = imx415->supported_modes;
-	     mode < imx415->supported_modes + imx415->cfg_num; mode++) {
-		if (imx415_mode_has_format(mode, code, width, height) &&
-		    mode->hdr_mode == hdr_mode)
-			return mode;
-	}
-
-	return NULL;
+	return &imx415->supported_modes[cur_best_fit];
 }
 
 static int __imx415_power_on(struct imx415 *imx415);
@@ -1964,64 +2409,15 @@ static void imx415_change_mode(struct imx415 *imx415, const struct imx415_mode *
 		imx415->is_thunderboot_ng = true;
 		__imx415_power_on(imx415);
 	}
+	if (mode != &imx415->debug_mode) {
+		imx415->debug_manual_mode = false;
+		imx415->debug_base_mode = mode;
+		imx415->debug_mode = *mode;
+	}
 	imx415->cur_mode = mode;
 	imx415->cur_vts = imx415->cur_mode->vts_def;
-	imx415->is_tline_init = false;
-	dev_info(&imx415->client->dev,
-		 "set fmt: cur_mode: %dx%d, hdr: %d, bpp: %d, fps: %u/%u, hts: 0x%x, vts: 0x%x, mipi_idx: %u, exp_def: %u\n",
-		 mode->width, mode->height, mode->hdr_mode, mode->bpp,
-		 mode->max_fps.denominator, mode->max_fps.numerator,
-		 mode->hts_def, mode->vts_def, mode->mipi_freq_idx,
-		 mode->exp_def);
-}
-
-static void imx415_update_controls(struct imx415 *imx415,
-				   const struct imx415_mode *mode)
-{
-	s64 h_blank, vblank_def, vblank_min;
-	s64 exposure_max, exposure_def;
-	u64 pixel_rate = 0;
-	u8 lanes = imx415->bus_cfg.bus.mipi_csi2.num_data_lanes;
-
-	h_blank = mode->hts_def - mode->width;
-	__v4l2_ctrl_modify_range(imx415->hblank, h_blank,
-				 h_blank, 1, h_blank);
-
-	vblank_def = mode->vts_def - mode->height;
-	/* VMAX >= (PIX_VWIDTH / 2) + 46 = height + 46 */
-	vblank_min = (mode->height + 46) - mode->height;
-	__v4l2_ctrl_modify_range(imx415->vblank, vblank_min,
-				 IMX415_VTS_MAX - mode->height,
-				 1, vblank_def);
-	__v4l2_ctrl_s_ctrl(imx415->vblank, vblank_def);
-
-	/*
-	 * The high-speed experimental modes were validated with EXP=128
-	 * (SHR0=VMAX-128). Do not leave the previous 4K30 exposure value
-	 * active, otherwise __v4l2_ctrl_handler_setup() overwrites SHR0 with
-	 * a near-frame-length exposure and the timing no longer matches tests.
-	 */
-	if (mode->hdr_mode == NO_HDR && imx415->exposure) {
-		exposure_max = mode->vts_def - 8;
-		exposure_def = mode->exp_def;
-		if (exposure_def < imx415->exposure->minimum)
-			exposure_def = imx415->exposure->minimum;
-		if (exposure_def > exposure_max)
-			exposure_def = exposure_max;
-
-		__v4l2_ctrl_modify_range(imx415->exposure,
-					 imx415->exposure->minimum,
-					 exposure_max,
-					 imx415->exposure->step,
-					 exposure_def);
-		__v4l2_ctrl_s_ctrl(imx415->exposure, exposure_def);
-	}
-
-	__v4l2_ctrl_s_ctrl(imx415->link_freq, mode->mipi_freq_idx);
-
-	pixel_rate = (u32)link_freq_items[mode->mipi_freq_idx] /
-		mode->bpp * 2 * lanes;
-	__v4l2_ctrl_s_ctrl_int64(imx415->pixel_rate, pixel_rate);
+	dev_info(&imx415->client->dev, "set fmt: cur_mode: %dx%d, hdr: %d, bpp: %d\n",
+		mode->width, mode->height, mode->hdr_mode, mode->bpp);
 }
 
 static int imx415_set_fmt(struct v4l2_subdev *sd,
@@ -2030,10 +2426,17 @@ static int imx415_set_fmt(struct v4l2_subdev *sd,
 {
 	struct imx415 *imx415 = to_imx415(sd);
 	const struct imx415_mode *mode;
+	s64 h_blank, vblank_def, vblank_min;
+	u64 pixel_rate = 0;
+	u8 lanes = imx415->bus_cfg.bus.mipi_csi2.num_data_lanes;
 
 	mutex_lock(&imx415->mutex);
 
-	mode = imx415_find_best_fit(imx415, fmt);
+	if (imx415->debug_enable && imx415->debug_manual_mode &&
+	    imx415->debug_aiq_block_params)
+		mode = imx415->cur_mode;
+	else
+		mode = imx415_find_best_fit(imx415, fmt);
 	fmt->format.code = mode->bus_fmt;
 	fmt->format.width = mode->width;
 	fmt->format.height = mode->height;
@@ -2047,7 +2450,21 @@ static int imx415_set_fmt(struct v4l2_subdev *sd,
 #endif
 	} else {
 		imx415_change_mode(imx415, mode);
-		imx415_update_controls(imx415, mode);
+		h_blank = mode->hts_def - mode->width;
+		__v4l2_ctrl_modify_range(imx415->hblank, h_blank,
+					 h_blank, 1, h_blank);
+		vblank_def = mode->vts_def - mode->height;
+		/* VMAX >= (PIX_VWIDTH / 2) + 46 = height + 46 */
+		vblank_min = (mode->height + 46) - mode->height;
+		__v4l2_ctrl_modify_range(imx415->vblank, vblank_min,
+					 IMX415_VTS_MAX - mode->height,
+					 1, vblank_def);
+		__v4l2_ctrl_s_ctrl(imx415->vblank, vblank_def);
+		__v4l2_ctrl_s_ctrl(imx415->link_freq, mode->mipi_freq_idx);
+		pixel_rate = (u32)link_freq_items[mode->mipi_freq_idx] /
+			mode->bpp * 2 * lanes;
+		__v4l2_ctrl_s_ctrl_int64(imx415->pixel_rate,
+					 pixel_rate);
 	}
 	dev_info(&imx415->client->dev, "%s: mode->mipi_freq_idx(%d)",
 		 __func__, mode->mipi_freq_idx);
@@ -2092,31 +2509,20 @@ static int imx415_enum_mbus_code(struct v4l2_subdev *sd,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct imx415 *imx415 = to_imx415(sd);
-	unsigned int i;
-	unsigned int index = 0;
 
-	for (i = 0; i < imx415->cfg_num; i++) {
-		unsigned int j;
-		bool duplicated = false;
-
-		for (j = 0; j < i; j++) {
-			if (imx415->supported_modes[i].bus_fmt ==
-			    imx415->supported_modes[j].bus_fmt) {
-				duplicated = true;
-				break;
-			}
-		}
-		if (duplicated)
-			continue;
-
-		if (index == code->index) {
-			code->code = imx415->supported_modes[i].bus_fmt;
-			return 0;
-		}
-		index++;
+	if (imx415->debug_enable && imx415->debug_manual_mode) {
+		if (code->index)
+			return -EINVAL;
+		code->code = imx415->cur_mode->bus_fmt;
+		return 0;
 	}
 
-	return -EINVAL;
+	if (code->index >= imx415->cfg_num)
+		return -EINVAL;
+
+	code->code = imx415->supported_modes[code->index].bus_fmt;
+
+	return 0;
 }
 
 static int imx415_enum_frame_sizes(struct v4l2_subdev *sd,
@@ -2124,89 +2530,40 @@ static int imx415_enum_frame_sizes(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct imx415 *imx415 = to_imx415(sd);
-	unsigned int i;
-	unsigned int index = 0;
 
-	for (i = 0; i < imx415->cfg_num; i++) {
-		unsigned int j;
-		bool duplicated = false;
-
-		if (fse->code != imx415->supported_modes[i].bus_fmt)
-			continue;
-
-		for (j = 0; j < i; j++) {
-			if (imx415->supported_modes[j].bus_fmt ==
-			    imx415->supported_modes[i].bus_fmt &&
-			    imx415->supported_modes[j].width ==
-			    imx415->supported_modes[i].width &&
-			    imx415->supported_modes[j].height ==
-			    imx415->supported_modes[i].height) {
-				duplicated = true;
-				break;
-			}
-		}
-		if (duplicated)
-			continue;
-
-		if (index == fse->index) {
-			fse->min_width = imx415->supported_modes[i].width;
-			fse->max_width = imx415->supported_modes[i].width;
-			fse->min_height = imx415->supported_modes[i].height;
-			fse->max_height = imx415->supported_modes[i].height;
-			return 0;
-		}
-		index++;
+	if (imx415->debug_enable && imx415->debug_manual_mode) {
+		if (fse->index)
+			return -EINVAL;
+		if (fse->code != imx415->cur_mode->bus_fmt)
+			return -EINVAL;
+		fse->min_width  = imx415->cur_mode->width;
+		fse->max_width  = imx415->cur_mode->width;
+		fse->max_height = imx415->cur_mode->height;
+		fse->min_height = imx415->cur_mode->height;
+		return 0;
 	}
 
-	return -EINVAL;
+	if (fse->index >= imx415->cfg_num)
+		return -EINVAL;
+
+	if (fse->code != imx415->supported_modes[fse->index].bus_fmt)
+		return -EINVAL;
+
+	fse->min_width  = imx415->supported_modes[fse->index].width;
+	fse->max_width  = imx415->supported_modes[fse->index].width;
+	fse->max_height = imx415->supported_modes[fse->index].height;
+	fse->min_height = imx415->supported_modes[fse->index].height;
+
+	return 0;
 }
 
 static int imx415_g_frame_interval(struct v4l2_subdev *sd,
 				   struct v4l2_subdev_frame_interval *fi)
 {
 	struct imx415 *imx415 = to_imx415(sd);
+	const struct imx415_mode *mode = imx415->cur_mode;
 
-	mutex_lock(&imx415->mutex);
-	fi->interval = imx415->cur_mode->max_fps;
-	mutex_unlock(&imx415->mutex);
-
-	return 0;
-}
-
-static int imx415_s_frame_interval(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_frame_interval *fi)
-{
-	struct imx415 *imx415 = to_imx415(sd);
-	const struct imx415_mode *mode;
-	struct v4l2_fract interval;
-
-	mutex_lock(&imx415->mutex);
-
-	interval = fi->interval;
-	if (!interval.numerator || !interval.denominator)
-		interval = imx415->cur_mode->max_fps;
-
-	mode = imx415_find_mode_by_interval(imx415, imx415->cur_mode->bus_fmt,
-					     imx415->cur_mode->width,
-					     imx415->cur_mode->height,
-					     imx415->cur_mode->hdr_mode,
-					     &interval);
-	if (!mode) {
-		mutex_unlock(&imx415->mutex);
-		return -EINVAL;
-	}
-
-	dev_info(&imx415->client->dev,
-		 "%s: selected %ux%u code 0x%x hdr %u fps %u/%u hts 0x%x\n",
-		 __func__, mode->width, mode->height, mode->bus_fmt,
-		 mode->hdr_mode, mode->max_fps.denominator,
-		 mode->max_fps.numerator, mode->hts_def);
-
-	imx415_change_mode(imx415, mode);
-	imx415_update_controls(imx415, mode);
 	fi->interval = mode->max_fps;
-
-	mutex_unlock(&imx415->mutex);
 
 	return 0;
 }
@@ -2780,14 +3137,29 @@ static long imx415_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	struct imx415 *imx415 = to_imx415(sd);
 	struct rkmodule_hdr_cfg *hdr;
 	struct rkmodule_channel_info *ch_info;
-	u32 h, w, stream;
+	u32 i, h, w, stream;
 	long ret = 0;
 	const struct imx415_mode *mode;
+	u64 pixel_rate = 0;
 	struct rkmodule_csi_dphy_param *dphy_param;
+	u8 lanes = imx415->bus_cfg.bus.mipi_csi2.num_data_lanes;
 	struct rkmodule_exp_delay *exp_delay;
 	struct rkmodule_exp_info *exp_info;
 	int idx_max = 0;
-	int i;
+
+	if (imx415->debug_enable && imx415->debug_aiq_block_params &&
+	    (cmd == PREISP_CMD_SET_HDRAE_EXP || cmd == RKMODULE_SET_HDR_CFG)) {
+		dev_dbg(&imx415->client->dev,
+			"debug proxy: blocked AIQ parameter ioctl 0x%x\n", cmd);
+		return 0;
+	}
+
+	if (imx415->debug_enable && imx415->debug_aiq_block_stream &&
+	    cmd == RKMODULE_SET_QUICK_STREAM) {
+		dev_dbg(&imx415->client->dev,
+			"debug proxy: blocked AIQ stream ioctl 0x%x\n", cmd);
+		return 0;
+	}
 
 	switch (cmd) {
 	case PREISP_CMD_SET_HDRAE_EXP:
@@ -2808,16 +3180,22 @@ static long imx415_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		hdr = (struct rkmodule_hdr_cfg *)arg;
 		w = imx415->cur_mode->width;
 		h = imx415->cur_mode->height;
-		mode = imx415_find_mode_by_hdr(imx415, imx415->cur_mode->bus_fmt,
-					      w, h, hdr->hdr_mode,
-					      &imx415->cur_mode->max_fps);
-		if (!mode) {
+		for (i = 0; i < imx415->cfg_num; i++) {
+			if (w == imx415->supported_modes[i].width &&
+			    h == imx415->supported_modes[i].height &&
+			    imx415->supported_modes[i].hdr_mode == hdr->hdr_mode) {
+				dev_info(&imx415->client->dev, "set hdr cfg, set mode to %d\n", i);
+				imx415_change_mode(imx415, &imx415->supported_modes[i]);
+				break;
+			}
+		}
+		if (i == imx415->cfg_num) {
 			dev_err(&imx415->client->dev,
-				"not find hdr mode:%d %dx%d code:0x%x config\n",
-				hdr->hdr_mode, w, h, imx415->cur_mode->bus_fmt);
+				"not find hdr mode:%d %dx%d config\n",
+				hdr->hdr_mode, w, h);
 			ret = -EINVAL;
 		} else {
-			imx415_change_mode(imx415, mode);
+			mode = imx415->cur_mode;
 			if (imx415->streaming) {
 				ret = imx415_write_reg(imx415->client, IMX415_GROUP_HOLD_REG,
 					IMX415_REG_VALUE_08BIT, IMX415_GROUP_HOLD_START);
@@ -2829,8 +3207,18 @@ static long imx415_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 				if (ret)
 					return ret;
 			}
+			w = mode->hts_def - imx415->cur_mode->width;
+			h = mode->vts_def - mode->height;
 			mutex_lock(&imx415->mutex);
-			imx415_update_controls(imx415, mode);
+			__v4l2_ctrl_modify_range(imx415->hblank, w, w, 1, w);
+			__v4l2_ctrl_modify_range(imx415->vblank, h,
+				IMX415_VTS_MAX - mode->height,
+				1, h);
+			__v4l2_ctrl_s_ctrl(imx415->link_freq, mode->mipi_freq_idx);
+			pixel_rate = (u32)link_freq_items[mode->mipi_freq_idx] /
+				mode->bpp * 2 * lanes;
+			__v4l2_ctrl_s_ctrl_int64(imx415->pixel_rate,
+						 pixel_rate);
 			mutex_unlock(&imx415->mutex);
 		}
 		break;
@@ -3069,29 +3457,114 @@ static long imx415_compat_ioctl32(struct v4l2_subdev *sd,
 }
 #endif
 
+static int imx415_debug_program_apply_locked(struct imx415 *imx415)
+{
+	const struct imx415_debug_program_op *op;
+	u32 i;
+	int ret = 0;
+
+	if (!(imx415->debug_enable && imx415->debug_program_enable))
+		return 0;
+
+	if (!imx415->debug_manual_mode || !imx415->debug_program_committed ||
+	    !imx415->debug_program_committed_count ||
+	    imx415->debug_program_committed_count != imx415->debug_program_count) {
+		dev_err(&imx415->client->dev,
+			"debug program: arm rejected; require manual mode and committed stable program\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	if (imx415->debug_skip_init_regs) {
+		dev_err(&imx415->client->dev,
+			"debug program: refuses debug_skip_init_regs=1 validation path\n");
+		ret = -EINVAL;
+		goto done;
+	}
+	if (imx415->is_thunderboot) {
+		dev_err(&imx415->client->dev,
+			"debug program: refuses thunderboot stream path\n");
+		ret = -EBUSY;
+		goto done;
+	}
+
+	dev_info(&imx415->client->dev,
+		 "debug program: applying %u staged ops policy=%s generation=%u before first CTRL_MODE release\n",
+		 imx415->debug_program_committed_count,
+		 imx415_debug_program_policy_name(imx415->debug_program_policy),
+		 imx415->debug_program_generation);
+
+	for (i = 0; i < imx415->debug_program_committed_count; i++) {
+		op = &imx415->debug_program[i];
+		if (op->type == IMX415_DEBUG_PROGRAM_DELAY) {
+			usleep_range(op->value * 1000, op->value * 1000 + 500);
+			continue;
+		}
+		ret = imx415_write_reg(imx415->client, op->addr,
+				       op->len, op->value);
+		if (ret) {
+			dev_err(&imx415->client->dev,
+				"debug program: write failed index=%u addr=0x%04x ret=%d\n",
+				i, op->addr, ret);
+			break;
+		}
+	}
+done:
+	imx415->debug_program_apply_count++;
+	imx415->debug_program_last_ret = ret;
+	return ret;
+}
+
 static int __imx415_start_stream(struct imx415 *imx415)
 {
+	bool program_active;
+	bool replace_init;
 	int ret;
 
-	if (!imx415->is_thunderboot) {
-		ret = imx415_write_array(imx415->client, imx415->cur_mode->global_reg_list);
+	program_active = imx415->debug_enable && imx415->debug_program_enable;
+	replace_init = program_active &&
+		imx415->debug_program_policy == IMX415_DEBUG_PROGRAM_REPLACE_INIT;
+
+	if (program_active && imx415->debug_skip_init_regs) {
+		dev_err(&imx415->client->dev,
+			"debug program: debug_skip_init_regs=1 is invalid with staged pre-stream program\n");
+		return -EINVAL;
+	}
+
+	if (replace_init) {
+		/*
+		 * Full-program mode: the staged program replaces both native
+		 * register arrays and is applied while the sensor is in standby.
+		 * V4L2 controls are still applied afterwards, matching native
+		 * driver sequencing.
+		 */
+		ret = imx415_debug_program_apply_locked(imx415);
 		if (ret)
 			return ret;
-		ret = imx415_write_array(imx415->client, imx415->cur_mode->reg_list);
+	} else if (!imx415->is_thunderboot &&
+		   !(imx415->debug_enable && imx415->debug_skip_init_regs)) {
+		ret = imx415_write_array(imx415->client,
+					 imx415->cur_mode->global_reg_list);
 		if (ret)
 			return ret;
+		ret = imx415_write_array(imx415->client,
+					 imx415->cur_mode->reg_list);
+		if (ret)
+			return ret;
+	} else if (imx415->debug_enable && imx415->debug_skip_init_regs) {
+		dev_info(&imx415->client->dev,
+			 "debug proxy: skip sensor init register arrays\n");
 	}
 	imx415_get_pclk_and_tline(imx415);
 
 	/* In case these controls are set before streaming */
-	ret = __v4l2_ctrl_handler_setup(&imx415->ctrl_handler);
-	if (ret)
-		return ret;
-
-	/* Give the receiver/sensor a short settle window for 2376 Mbps modes. */
-	if (imx415->cur_mode->mipi_freq_idx == 4)
-		usleep_range(30000, 35000);
-
+	if (!(imx415->debug_enable && imx415->debug_skip_ctrl_setup)) {
+		ret = __v4l2_ctrl_handler_setup(&imx415->ctrl_handler);
+		if (ret)
+			return ret;
+	} else {
+		dev_info(&imx415->client->dev,
+			 "debug proxy: skip V4L2 control setup on stream start\n");
+	}
 	if (imx415->has_init_exp && imx415->cur_mode->hdr_mode != NO_HDR) {
 		imx415->rhs1_old = IMX415_RHS1_DEFAULT;
 		imx415->rhs2_old = IMX415_RHS2_DEFAULT;
@@ -3103,6 +3576,17 @@ static int __imx415_start_stream(struct imx415 *imx415)
 			return ret;
 		}
 	}
+
+	if (program_active && !replace_init) {
+		/*
+		 * Delta-program mode: retain native init/control handling and
+		 * apply the staged delta as the final pre-release operation.
+		 */
+		ret = imx415_debug_program_apply_locked(imx415);
+		if (ret)
+			return ret;
+	}
+
 	return imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
 				IMX415_REG_VALUE_08BIT, 0);
 }
@@ -3374,23 +3858,27 @@ static int imx415_enum_frame_interval(struct v4l2_subdev *sd,
 	struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct imx415 *imx415 = to_imx415(sd);
-	unsigned int i;
-	unsigned int index = 0;
 
-	for (i = 0; i < imx415->cfg_num; i++) {
-		if (!imx415_mode_has_format(&imx415->supported_modes[i], fie->code,
-						  fie->width, fie->height))
-			continue;
-
-		if (index == fie->index) {
-			fie->interval = imx415->supported_modes[i].max_fps;
-			fie->reserved[0] = imx415->supported_modes[i].hdr_mode;
-			return 0;
-		}
-		index++;
+	if (imx415->debug_enable && imx415->debug_manual_mode) {
+		if (fie->index)
+			return -EINVAL;
+		fie->code = imx415->cur_mode->bus_fmt;
+		fie->width = imx415->cur_mode->width;
+		fie->height = imx415->cur_mode->height;
+		fie->interval = imx415->cur_mode->max_fps;
+		fie->reserved[0] = imx415->cur_mode->hdr_mode;
+		return 0;
 	}
 
-	return -EINVAL;
+	if (fie->index >= imx415->cfg_num)
+		return -EINVAL;
+
+	fie->code = imx415->supported_modes[fie->index].bus_fmt;
+	fie->width = imx415->supported_modes[fie->index].width;
+	fie->height = imx415->supported_modes[fie->index].height;
+	fie->interval = imx415->supported_modes[fie->index].max_fps;
+	fie->reserved[0] = imx415->supported_modes[fie->index].hdr_mode;
+	return 0;
 }
 
 #define CROP_START(SRC, DST) (((SRC) - (DST)) / 2 / 4 * 4)
@@ -3459,7 +3947,6 @@ static const struct v4l2_subdev_core_ops imx415_core_ops = {
 static const struct v4l2_subdev_video_ops imx415_video_ops = {
 	.s_stream = imx415_s_stream,
 	.g_frame_interval = imx415_g_frame_interval,
-	.s_frame_interval = imx415_s_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops imx415_pad_ops = {
@@ -3529,6 +4016,13 @@ static int imx415_set_ctrl(struct v4l2_ctrl *ctrl)
 	u32 vts = 0, val;
 	int ret = 0;
 	u32 shr0 = 0;
+
+	if (imx415->debug_enable && imx415->debug_aiq_block_params) {
+		dev_dbg(&client->dev,
+			"debug proxy: blocked AIQ ctrl id=0x%x val=0x%x\n",
+			ctrl->id, ctrl->val);
+		return 0;
+	}
 
 	/* Propagate change of current control to all related controls */
 	switch (ctrl->id) {
@@ -3829,6 +4323,12 @@ static int imx415_probe(struct i2c_client *client,
 			break;
 		}
 	}
+	if (!imx415->cur_mode) {
+		dev_warn(dev, "requested hdr mode %u not found, use mode 0\n", hdr_mode);
+		imx415->cur_mode = &imx415->supported_modes[0];
+	}
+	imx415->debug_base_mode = imx415->cur_mode;
+	imx415->debug_mode = *imx415->cur_mode;
 
 	of_property_read_u32(node, RKMODULE_CAMERA_FASTBOOT_ENABLE,
 		&imx415->is_thunderboot);
@@ -3924,6 +4424,12 @@ static int imx415_probe(struct i2c_client *client,
 	pm_runtime_enable(dev);
 	pm_runtime_idle(dev);
 
+	ret = sysfs_create_group(&dev->kobj, &imx415_debug_attr_group);
+	if (ret)
+		dev_warn(dev, "failed to create debug sysfs group: %d\n", ret);
+	else
+		imx415->debug_sysfs_created = true;
+
 	return 0;
 
 err_clean_entity:
@@ -3944,6 +4450,13 @@ static void imx415_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct imx415 *imx415 = to_imx415(sd);
+
+	if (imx415->debug_sysfs_created)
+		sysfs_remove_group(&client->dev.kobj, &imx415_debug_attr_group);
+	if (imx415->debug_pm_hold) {
+		imx415->debug_pm_hold = false;
+		pm_runtime_put(&client->dev);
+	}
 
 	v4l2_async_unregister_subdev(sd);
 #if defined(CONFIG_MEDIA_CONTROLLER)
