@@ -127,6 +127,16 @@ struct sditf_priv {
 	u32 hdr_wrap_line;
 	bool is_toisp_off;
 	bool is_buf_init;
+
+	/* Userspace-gated ISP/CIF link-mode debug control; inert by default. */
+	bool debug_sditf_enable;
+	bool debug_sditf_sysfs_created;
+	bool debug_sditf_force_mode;
+	bool debug_sditf_force_link_mode;
+	u32 debug_sditf_rdbk_mode;
+	u32 debug_sditf_link_mode;
+	u32 debug_sditf_apply_count;
+	u32 debug_sditf_intercept_count;
 };
 
 extern struct platform_driver rkcif_subdev_driver;

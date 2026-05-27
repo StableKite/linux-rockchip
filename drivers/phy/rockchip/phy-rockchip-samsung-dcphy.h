@@ -42,6 +42,15 @@ struct samsung_mipi_dcphy_plat_data {
 	u32 cphy_tx_max_ksps_per_lane;
 };
 
+#define SAMSUNG_DCPHY_DEBUG_MAX_OPS	128
+
+struct samsung_dcphy_debug_op {
+	u32 reg;
+	u32 mask;
+	u32 val;
+	bool masked;
+};
+
 struct samsung_mipi_dcphy {
 	struct device *dev;
 	struct clk *ref_clk;
@@ -76,6 +85,29 @@ struct samsung_mipi_dcphy {
 	int (*stream_on)(struct csi2_dphy *dphy, struct v4l2_subdev *sd);
 	int (*stream_off)(struct csi2_dphy *dphy, struct v4l2_subdev *sd);
 	struct resource *res;
+
+	/* Userspace-gated laboratory control plane; inert unless debug_dcphy_enable=1. */
+	bool debug_dcphy_enable;
+	bool debug_dcphy_sysfs_created;
+	bool debug_dcphy_settle_override;
+	bool debug_dcphy_ignore_lane_ready;
+	u32 debug_dcphy_clk_settle;
+	u32 debug_dcphy_hsfreq;
+	u32 debug_dcphy_sot_sync;
+	u32 debug_dcphy_reg_addr;
+	u32 debug_dcphy_reg_last;
+	u32 debug_dcphy_reg_ops;
+	bool debug_dcphy_program_enable;
+	bool debug_dcphy_program_committed;
+	u32 debug_dcphy_program_count;
+	u32 debug_dcphy_program_generation;
+	u32 debug_dcphy_program_apply_count;
+	int debug_dcphy_program_last_ret;
+	struct samsung_dcphy_debug_op debug_dcphy_program[SAMSUNG_DCPHY_DEBUG_MAX_OPS];
+	u64 debug_dcphy_last_data_rate_mbps;
+	struct rkmodule_csi_dphy_param debug_dcphy_last_param;
+	u32 debug_dcphy_stream_on_count;
+	int debug_dcphy_last_stream_ret;
 };
 
 #endif

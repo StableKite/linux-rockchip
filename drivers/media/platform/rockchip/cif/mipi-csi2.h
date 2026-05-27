@@ -177,6 +177,15 @@ struct csi2_dev {
 	int			sw_dbg;
 };
 
+#define CSI2_HW_DEBUG_MAX_OPS	64
+
+struct csi2_hw_debug_op {
+	u32 reg;
+	u32 mask;
+	u32 val;
+	bool masked;
+};
+
 struct csi2_hw {
 	struct device		*dev;
 	struct clk_bulk_data	*clks_bulk;
@@ -194,6 +203,20 @@ struct csi2_hw {
 	int			irq1;
 	int			irq2;
 	const char		*dev_name;
+
+	/* Userspace-gated CSI host register control; inert by default. */
+	bool			debug_csihost_enable;
+	bool			debug_csihost_sysfs_created;
+	u32			debug_csihost_reg_addr;
+	u32			debug_csihost_reg_last;
+	u32			debug_csihost_reg_ops;
+	bool			debug_csihost_program_enable;
+	bool			debug_csihost_program_committed;
+	u32			debug_csihost_program_count;
+	u32			debug_csihost_program_generation;
+	u32			debug_csihost_program_apply_count;
+	int			debug_csihost_program_last_ret;
+	struct csi2_hw_debug_op debug_csihost_program[CSI2_HW_DEBUG_MAX_OPS];
 };
 
 u32 rkcif_csi2_get_sof(struct csi2_dev *csi2_dev);

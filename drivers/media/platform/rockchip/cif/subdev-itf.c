@@ -17,6 +17,8 @@
 #include <linux/pm_runtime.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <media/videobuf2-dma-contig.h>
 #include <media/v4l2-fwnode.h>
 #include "dev.h"
@@ -28,6 +30,17 @@
 static inline struct sditf_priv *to_sditf_priv(struct v4l2_subdev *subdev)
 {
 	return container_of(subdev, struct sditf_priv, sd);
+}
+
+static struct sditf_priv *sditf_from_dev(struct device *dev)
+{
+	struct media_entity *me = dev_get_drvdata(dev);
+	struct v4l2_subdev *sd;
+
+	if (!me)
+		return NULL;
+	sd = media_entity_to_v4l2_subdev(me);
+	return to_sditf_priv(sd);
 }
 
 void sditf_event_inc_sof(struct sditf_priv *priv)
@@ -380,6 +393,164 @@ static void sditf_reinit_mode(struct sditf_priv *priv, struct rkisp_vicap_mode *
 		 __func__, mode->rdbk_mode, mode->name, priv->toisp_inf.link_mode);
 }
 
+/*
+ * Userspace-gated control of CIF-to-ISP online/readback routing.  The ISP
+ * normally drives RKISP_VICAP_CMD_MODE; this surface can either stage an
+ * explicit mode while idle or force the value on subsequent ISP requests.
+ * It is disabled by default and exists only for controlled laboratory tests.
+ */
+static ssize_t debug_sditf_enable_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct sditf_priv *priv = sditf_from_dev(dev);
+
+	if (!priv)
+		return -ENODEV;
+	return scnprintf(buf, PAGE_SIZE, "%u\n", priv->debug_sditf_enable ? 1 : 0);
+}
+
+static ssize_t debug_sditf_enable_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct sditf_priv *priv = sditf_from_dev(dev);
+	bool enable;
+	int ret;
+
+	if (!priv)
+		return -ENODEV;
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+	mutex_lock(&priv->mutex);
+	if (atomic_read(&priv->stream_cnt)) {
+		ret = -EBUSY;
+	} else {
+		priv->debug_sditf_enable = enable;
+		if (!enable) {
+			priv->debug_sditf_force_mode = false;
+			priv->debug_sditf_force_link_mode = false;
+		}
+		ret = 0;
+	}
+	mutex_unlock(&priv->mutex);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_sditf_enable);
+
+static ssize_t debug_sditf_mode_show(struct device *dev,
+				     struct device_attribute *attr, char *buf)
+{
+	struct sditf_priv *priv = sditf_from_dev(dev);
+
+	if (!priv)
+		return -ENODEV;
+	return scnprintf(buf, PAGE_SIZE,
+		"build=imx415_fullcontrol_sditf_v1 enable=%u streaming=%d current_rdbk_mode=%u current_link_mode=%u force_mode=%u forced_rdbk_mode=%u force_link=%u forced_link_mode=%u apply_count=%u intercept_count=%u\n"
+		"write: reset | force_mode=<0|1> rdbk_mode=<0..%u> force_link=<0|1> link_mode=<0..%u> apply=<0|1>\n",
+		priv->debug_sditf_enable ? 1 : 0, atomic_read(&priv->stream_cnt),
+		priv->mode.rdbk_mode, priv->toisp_inf.link_mode,
+		priv->debug_sditf_force_mode ? 1 : 0, priv->debug_sditf_rdbk_mode,
+		priv->debug_sditf_force_link_mode ? 1 : 0, priv->debug_sditf_link_mode,
+		priv->debug_sditf_apply_count, priv->debug_sditf_intercept_count,
+		RKISP_VICAP_RDBK_AUTO_ONE_FRAME, TOISP_UNITE);
+}
+
+static ssize_t debug_sditf_mode_store(struct device *dev,
+				      struct device_attribute *attr,
+				      const char *buf, size_t count)
+{
+	struct sditf_priv *priv = sditf_from_dev(dev);
+	struct rkcif_device *cif_dev;
+	char *tmp, *p, *tok, *eq;
+	u32 value;
+	bool apply = false;
+	int ret = 0;
+
+	if (!priv)
+		return -ENODEV;
+	if (!priv->debug_sditf_enable)
+		return -EPERM;
+	cif_dev = priv->cif_dev;
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+	mutex_lock(&priv->mutex);
+	if (atomic_read(&priv->stream_cnt)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	p = strim(tmp);
+	if (sysfs_streq(p, "reset")) {
+		priv->debug_sditf_force_mode = false;
+		priv->debug_sditf_force_link_mode = false;
+		priv->debug_sditf_rdbk_mode = RKISP_VICAP_RDBK_AIQ;
+		priv->debug_sditf_link_mode = TOISP_NONE;
+		goto out;
+	}
+	p = tmp;
+	while ((tok = strsep(&p, " \t\n,")) != NULL) {
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		eq = strchr(tok, '=');
+		if (!eq) {
+			ret = -EINVAL;
+			break;
+		}
+		*eq = '\0';
+		ret = kstrtou32(eq + 1, 0, &value);
+		if (ret)
+			break;
+		if (!strcmp(tok, "force_mode"))
+			priv->debug_sditf_force_mode = !!value;
+		else if (!strcmp(tok, "force_link"))
+			priv->debug_sditf_force_link_mode = !!value;
+		else if (!strcmp(tok, "rdbk_mode") && value <= RKISP_VICAP_RDBK_AUTO_ONE_FRAME)
+			priv->debug_sditf_rdbk_mode = value;
+		else if (!strcmp(tok, "link_mode") && value <= TOISP_UNITE)
+			priv->debug_sditf_link_mode = value;
+		else if (!strcmp(tok, "apply"))
+			apply = !!value;
+		else
+			ret = -EINVAL;
+		if (ret)
+			break;
+	}
+	if (!ret && apply) {
+		mutex_lock(&cif_dev->stream_lock);
+		if (priv->debug_sditf_force_mode) {
+			priv->mode.rdbk_mode = priv->debug_sditf_rdbk_mode;
+			priv->mode_src.rdbk_mode = priv->debug_sditf_rdbk_mode;
+		}
+		sditf_reinit_mode(priv, &priv->mode);
+		if (priv->debug_sditf_force_link_mode)
+			priv->toisp_inf.link_mode = priv->debug_sditf_link_mode;
+		priv->debug_sditf_apply_count++;
+		mutex_unlock(&cif_dev->stream_lock);
+		dev_info(priv->dev,
+			 "debug sditf apply rdbk_mode=%u link_mode=%u force_mode=%u force_link=%u\n",
+			 priv->mode.rdbk_mode, priv->toisp_inf.link_mode,
+			 priv->debug_sditf_force_mode ? 1 : 0,
+			 priv->debug_sditf_force_link_mode ? 1 : 0);
+	}
+out:
+	mutex_unlock(&priv->mutex);
+	kfree(tmp);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_sditf_mode);
+
+static struct attribute *sditf_debug_attrs[] = {
+	&dev_attr_debug_sditf_enable.attr,
+	&dev_attr_debug_sditf_mode.attr,
+	NULL,
+};
+
+static const struct attribute_group sditf_debug_attr_group = {
+	.attrs = sditf_debug_attrs,
+};
+
 #ifdef CONFIG_VIDEO_ROCKCHIP_THUNDER_BOOT_SETUP
 static void sditf_select_sensor_setting_for_thunderboot(struct sditf_priv *priv)
 {
@@ -475,6 +646,12 @@ static long sditf_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 	switch (cmd) {
 	case RKISP_VICAP_CMD_MODE:
 		mode = (struct rkisp_vicap_mode *)arg;
+		if (priv->debug_sditf_enable && priv->debug_sditf_force_mode) {
+			mode->rdbk_mode = priv->debug_sditf_rdbk_mode;
+			priv->debug_sditf_intercept_count++;
+			dev_info(priv->dev, "debug sditf forcing ISP request rdbk_mode=%u\n",
+				 mode->rdbk_mode);
+		}
 		if (mode->rdbk_mode == RKISP_VICAP_ONLINE_UNITE &&
 		    priv->cif_dev->chip_id < CHIP_RV1103B_CIF)
 			return -EINVAL;
@@ -500,6 +677,11 @@ static long sditf_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		memcpy(&priv->mode, mode, sizeof(*mode));
 		mutex_unlock(&cif_dev->stream_lock);
 		sditf_reinit_mode(priv, &priv->mode);
+		if (priv->debug_sditf_enable && priv->debug_sditf_force_link_mode) {
+			priv->toisp_inf.link_mode = priv->debug_sditf_link_mode;
+			dev_info(priv->dev, "debug sditf forcing link_mode=%u\n",
+				 priv->toisp_inf.link_mode);
+		}
 		if (priv->is_combine_mode)
 			mode->input.merge_num = cif_dev->sditf_cnt;
 		else
@@ -1740,6 +1922,13 @@ static int rkcif_subdev_media_init(struct sditf_priv *priv)
 	mutex_init(&priv->mutex);
 	priv->hdr_wrap_line = 0;
 	priv->is_buf_init = false;
+	priv->debug_sditf_enable = false;
+	priv->debug_sditf_force_mode = false;
+	priv->debug_sditf_force_link_mode = false;
+	priv->debug_sditf_rdbk_mode = RKISP_VICAP_RDBK_AIQ;
+	priv->debug_sditf_link_mode = TOISP_NONE;
+	priv->debug_sditf_apply_count = 0;
+	priv->debug_sditf_intercept_count = 0;
 	return 0;
 }
 
@@ -1783,6 +1972,14 @@ static int rkcif_subdev_probe(struct platform_device *pdev)
 		return ret;
 
 	pm_runtime_enable(&pdev->dev);
+	ret = sysfs_create_group(&pdev->dev.kobj, &sditf_debug_attr_group);
+	if (ret) {
+		pm_runtime_disable(&pdev->dev);
+		media_entity_cleanup(&sd->entity);
+		return ret;
+	}
+	priv->debug_sditf_sysfs_created = true;
+	dev_info(dev, "fullcontrol sditf online/rdbk debug sysfs enabled\n");
 	return 0;
 }
 
@@ -1790,7 +1987,10 @@ static int rkcif_subdev_remove(struct platform_device *pdev)
 {
 	struct media_entity *me = platform_get_drvdata(pdev);
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(me);
+	struct sditf_priv *priv = to_sditf_priv(sd);
 
+	if (priv->debug_sditf_sysfs_created)
+		sysfs_remove_group(&pdev->dev.kobj, &sditf_debug_attr_group);
 	media_entity_cleanup(&sd->entity);
 
 	pm_runtime_disable(&pdev->dev);

@@ -1039,6 +1039,154 @@ static ssize_t rkcif_store_get_exp_mode(struct device *dev,
 static DEVICE_ATTR(is_support_get_exp, 0600,
 		   rkcif_show_get_exp_mode, rkcif_store_get_exp_mode);
 
+/*
+ * Full-userspace debug surface for the final CIF block in the active path.
+ * This is deliberately disabled by default and performs no register access
+ * until debug_cif_enable is explicitly set.  It is intended for laboratory
+ * bring-up only; writes while streaming are the user's deliberate experiment.
+ */
+static bool rkcif_debug_raw_reg_valid(struct rkcif_device *cif_dev, u32 reg)
+{
+	if (!cif_dev->hw_dev || !cif_dev->hw_dev->base_addr || !cif_dev->hw_dev->res)
+		return false;
+
+	return resource_size(cif_dev->hw_dev->res) >= sizeof(u32) &&
+	       !(reg & 0x3) &&
+	       reg <= resource_size(cif_dev->hw_dev->res) - sizeof(u32);
+}
+
+static int rkcif_debug_pm_get(struct rkcif_device *cif_dev)
+{
+	int ret;
+
+	ret = pm_runtime_resume_and_get(cif_dev->dev);
+	return ret < 0 ? ret : 0;
+}
+
+static void rkcif_debug_pm_put(struct rkcif_device *cif_dev)
+{
+	pm_runtime_put_sync(cif_dev->dev);
+}
+
+static ssize_t rkcif_show_debug_cif_enable(struct device *dev,
+					   struct device_attribute *attr, char *buf)
+{
+	struct rkcif_device *cif_dev = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", cif_dev->debug_cif_enable ? 1 : 0);
+}
+
+static ssize_t rkcif_store_debug_cif_enable(struct device *dev,
+					    struct device_attribute *attr,
+					    const char *buf, size_t len)
+{
+	struct rkcif_device *cif_dev = dev_get_drvdata(dev);
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+
+	cif_dev->debug_cif_enable = enable;
+	if (!enable) {
+		cif_dev->debug_cif_reg_addr = 0;
+		cif_dev->debug_cif_reg_last = 0;
+	}
+
+	dev_info(cif_dev->dev, "debug_cif_enable=%u\n", enable ? 1 : 0);
+	return len;
+}
+
+static DEVICE_ATTR(debug_cif_enable, 0600,
+		   rkcif_show_debug_cif_enable, rkcif_store_debug_cif_enable);
+
+static ssize_t rkcif_show_debug_cif_reg(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	struct rkcif_device *cif_dev = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE,
+		"enabled=%u addr=0x%08x value=0x%08x ops=%u\n",
+		cif_dev->debug_cif_enable ? 1 : 0,
+		cif_dev->debug_cif_reg_addr,
+		cif_dev->debug_cif_reg_last,
+		cif_dev->debug_cif_reg_ops);
+}
+
+static ssize_t rkcif_store_debug_cif_reg(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t len)
+{
+	struct rkcif_device *cif_dev = dev_get_drvdata(dev);
+	void __iomem *base;
+	char op[8];
+	u32 reg, val, mask;
+	int n, ret;
+
+	if (!cif_dev->debug_cif_enable)
+		return -EACCES;
+
+	n = sscanf(buf, "%7s %x %x %x", op, &reg, &mask, &val);
+	if (n < 2 || !rkcif_debug_raw_reg_valid(cif_dev, reg))
+		return -EINVAL;
+
+	ret = rkcif_debug_pm_get(cif_dev);
+	if (ret)
+		return ret;
+
+	base = cif_dev->hw_dev->base_addr;
+	mutex_lock(&cif_dev->stream_lock);
+	if (!strcmp(op, "r") && n == 2) {
+		val = readl(base + reg);
+	} else if (!strcmp(op, "w") && n == 3) {
+		val = mask;
+		writel(val, base + reg);
+	} else if (!strcmp(op, "mw") && n == 4) {
+		u32 old = readl(base + reg);
+
+		val = (old & ~mask) | (val & mask);
+		writel(val, base + reg);
+	} else {
+		mutex_unlock(&cif_dev->stream_lock);
+		rkcif_debug_pm_put(cif_dev);
+		return -EINVAL;
+	}
+	cif_dev->debug_cif_reg_addr = reg;
+	cif_dev->debug_cif_reg_last = readl(base + reg);
+	cif_dev->debug_cif_reg_ops++;
+	mutex_unlock(&cif_dev->stream_lock);
+	rkcif_debug_pm_put(cif_dev);
+
+	return len;
+}
+
+static DEVICE_ATTR(debug_cif_reg, 0600,
+		   rkcif_show_debug_cif_reg, rkcif_store_debug_cif_reg);
+
+static ssize_t rkcif_show_debug_cif_state(struct device *dev,
+					  struct device_attribute *attr, char *buf)
+{
+	struct rkcif_device *cif_dev = dev_get_drvdata(dev);
+	int ret;
+
+	ret = scnprintf(buf, PAGE_SIZE,
+		"build=imx415_fullcontrol_cif_v1 enabled=%u stream_cnt=%d power_cnt=%d "
+		"inf_id=%d chip_id=%d workmode=%d hdr_mode=%u rdbk_debug=%d "
+		"reg_addr=0x%08x reg_last=0x%08x reg_ops=%u\n",
+		cif_dev->debug_cif_enable ? 1 : 0,
+		atomic_read(&cif_dev->stream_cnt), atomic_read(&cif_dev->power_cnt),
+		cif_dev->inf_id, cif_dev->chip_id, cif_dev->workmode,
+		cif_dev->hdr.hdr_mode, cif_dev->rdbk_debug,
+		cif_dev->debug_cif_reg_addr, cif_dev->debug_cif_reg_last,
+		cif_dev->debug_cif_reg_ops);
+
+	return ret;
+}
+
+static DEVICE_ATTR(debug_cif_state, 0400,
+		   rkcif_show_debug_cif_state, NULL);
+
 static struct attribute *dev_attrs[] = {
 	&dev_attr_compact_test.attr,
 	&dev_attr_wait_line.attr,
@@ -1059,6 +1207,9 @@ static struct attribute *dev_attrs[] = {
 	&dev_attr_low_latency.attr,
 	&dev_attr_reg_dbg.attr,
 	&dev_attr_is_support_get_exp.attr,
+	&dev_attr_debug_cif_enable.attr,
+	&dev_attr_debug_cif_reg.attr,
+	&dev_attr_debug_cif_state.attr,
 	NULL,
 };
 
@@ -2862,6 +3013,10 @@ int rkcif_plat_init(struct rkcif_device *cif_dev, struct device_node *node, int 
 	cif_dev->sw_reg = devm_kzalloc(cif_dev->dev, RKCIF_REG_MAX, GFP_KERNEL);
 	cif_dev->reg_dbg = 0;
 	cif_dev->is_support_get_exp = false;
+	cif_dev->debug_cif_enable = false;
+	cif_dev->debug_cif_reg_addr = 0;
+	cif_dev->debug_cif_reg_last = 0;
+	cif_dev->debug_cif_reg_ops = 0;
 
 	cif_dev->resume_mode = 0;
 	memset(&cif_dev->channels[0].capture_info, 0, sizeof(cif_dev->channels[0].capture_info));

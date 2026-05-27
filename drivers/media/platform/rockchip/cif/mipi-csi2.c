@@ -16,6 +16,8 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
+#include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <linux/rk-camera-module.h>
 #include <media/v4l2-ioctl.h>
 #include "mipi-csi2.h"
@@ -165,6 +167,316 @@ static void csi2_disable_clks(struct csi2_hw *csi2_hw)
 	clk_bulk_disable_unprepare(csi2_hw->clks_num,  csi2_hw->clks_bulk);
 }
 
+static bool csi2_hw_debug_streaming(struct csi2_hw *hw)
+{
+	return hw->csi2 && hw->csi2->stream_count > 0;
+}
+
+static bool csi2_hw_debug_reg_valid(struct csi2_hw *hw, u32 reg)
+{
+	return hw->res && resource_size(hw->res) >= sizeof(u32) &&
+	       !(reg & 0x3) && reg <= resource_size(hw->res) - sizeof(u32);
+}
+
+static int csi2_hw_debug_clk_get(struct csi2_hw *hw, bool *temporary)
+{
+	int ret = 0;
+
+	*temporary = false;
+	if (!csi2_hw_debug_streaming(hw)) {
+		ret = csi2_enable_clks(hw);
+		if (!ret)
+			*temporary = true;
+	}
+	return ret;
+}
+
+static void csi2_hw_debug_clk_put(struct csi2_hw *hw, bool temporary)
+{
+	if (temporary)
+		csi2_disable_clks(hw);
+}
+
+static ssize_t debug_csihost_enable_show(struct device *dev,
+					 struct device_attribute *attr, char *buf)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", hw->debug_csihost_enable ? 1 : 0);
+}
+
+static ssize_t debug_csihost_enable_store(struct device *dev,
+					  struct device_attribute *attr,
+					  const char *buf, size_t count)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+	bool val;
+	int ret = kstrtobool(buf, &val);
+
+	if (ret)
+		return ret;
+	mutex_lock(&hw->lock);
+	if (csi2_hw_debug_streaming(hw))
+		ret = -EBUSY;
+	else {
+		hw->debug_csihost_enable = val;
+		ret = 0;
+	}
+	mutex_unlock(&hw->lock);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_csihost_enable);
+
+static ssize_t debug_csihost_reg_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE,
+		"last_reg=0x%04x last_val=0x%08x ops=%u\n"
+		"write: r <reg> | w <reg> <val> | mw <reg> <mask> <val>\n",
+		hw->debug_csihost_reg_addr, hw->debug_csihost_reg_last,
+		hw->debug_csihost_reg_ops);
+}
+
+static ssize_t debug_csihost_reg_store(struct device *dev,
+				       struct device_attribute *attr,
+				       const char *buf, size_t count)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+	char op[4];
+	u32 reg, mask, val, old;
+	bool temporary;
+	int ret;
+
+	if (!hw->debug_csihost_enable)
+		return -EPERM;
+	ret = csi2_hw_debug_clk_get(hw, &temporary);
+	if (ret)
+		return ret;
+	mutex_lock(&hw->lock);
+	if (sscanf(buf, "%3s %x %x %x", op, &reg, &mask, &val) == 4 &&
+	    !strcmp(op, "mw")) {
+		if (!csi2_hw_debug_reg_valid(hw, reg)) {
+			ret = -ERANGE;
+			goto out;
+		}
+		old = read_csihost_reg(hw->base, reg);
+		val = (old & ~mask) | (val & mask);
+		write_csihost_reg(hw->base, reg, val);
+	} else if (sscanf(buf, "%3s %x %x", op, &reg, &val) == 3 &&
+		   !strcmp(op, "w")) {
+		if (!csi2_hw_debug_reg_valid(hw, reg)) {
+			ret = -ERANGE;
+			goto out;
+		}
+		write_csihost_reg(hw->base, reg, val);
+	} else if (sscanf(buf, "%3s %x", op, &reg) == 2 &&
+		   !strcmp(op, "r")) {
+		if (!csi2_hw_debug_reg_valid(hw, reg)) {
+			ret = -ERANGE;
+			goto out;
+		}
+		val = read_csihost_reg(hw->base, reg);
+	} else {
+		ret = -EINVAL;
+		goto out;
+	}
+	hw->debug_csihost_reg_addr = reg;
+	hw->debug_csihost_reg_last = read_csihost_reg(hw->base, reg);
+	hw->debug_csihost_reg_ops++;
+	ret = 0;
+out:
+	mutex_unlock(&hw->lock);
+	csi2_hw_debug_clk_put(hw, temporary);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_csihost_reg);
+
+static ssize_t debug_csihost_program_show(struct device *dev,
+					  struct device_attribute *attr, char *buf)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+	ssize_t len;
+	u32 i;
+
+	len = scnprintf(buf, PAGE_SIZE,
+		"enable=%u committed=%u count=%u generation=%u apply_count=%u last_ret=%d\n"
+		"write one command per echo: clear | append w <reg> <val> | append mw <reg> <mask> <val> | commit | enable <0|1>\n",
+		hw->debug_csihost_program_enable ? 1 : 0,
+		hw->debug_csihost_program_committed ? 1 : 0,
+		hw->debug_csihost_program_count,
+		hw->debug_csihost_program_generation,
+		hw->debug_csihost_program_apply_count,
+		hw->debug_csihost_program_last_ret);
+	for (i = 0; i < hw->debug_csihost_program_count && len < PAGE_SIZE - 64; i++) {
+		struct csi2_hw_debug_op *op = &hw->debug_csihost_program[i];
+		if (op->masked)
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+				"%u: mw 0x%04x 0x%08x 0x%08x\n", i, op->reg, op->mask, op->val);
+		else
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+				"%u: w 0x%04x 0x%08x\n", i, op->reg, op->val);
+	}
+	return len;
+}
+
+static ssize_t debug_csihost_program_store(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+	struct csi2_hw_debug_op *op;
+	char cmd[8], sub[8];
+	u32 reg, mask, val, enable;
+	int ret = 0;
+
+	if (!hw->debug_csihost_enable)
+		return -EPERM;
+	mutex_lock(&hw->lock);
+	if (csi2_hw_debug_streaming(hw)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	if (sysfs_streq(buf, "clear")) {
+		memset(hw->debug_csihost_program, 0, sizeof(hw->debug_csihost_program));
+		hw->debug_csihost_program_count = 0;
+		hw->debug_csihost_program_enable = false;
+		hw->debug_csihost_program_committed = false;
+		goto out;
+	}
+	if (sysfs_streq(buf, "commit")) {
+		if (!hw->debug_csihost_program_count) {
+			ret = -EINVAL;
+			goto out;
+		}
+		hw->debug_csihost_program_committed = true;
+		hw->debug_csihost_program_generation++;
+		goto out;
+	}
+	if (sscanf(buf, "%7s %u", cmd, &enable) == 2 && !strcmp(cmd, "enable")) {
+		if (enable && !hw->debug_csihost_program_committed) {
+			ret = -EINVAL;
+			goto out;
+		}
+		hw->debug_csihost_program_enable = !!enable;
+		goto out;
+	}
+	if (hw->debug_csihost_program_count >= CSI2_HW_DEBUG_MAX_OPS) {
+		ret = -ENOSPC;
+		goto out;
+	}
+	if (sscanf(buf, "%7s %7s %x %x %x", cmd, sub, &reg, &mask, &val) == 5 &&
+	    !strcmp(cmd, "append") && !strcmp(sub, "mw")) {
+		if (!csi2_hw_debug_reg_valid(hw, reg)) {
+			ret = -ERANGE;
+			goto out;
+		}
+		op = &hw->debug_csihost_program[hw->debug_csihost_program_count++];
+		op->reg = reg;
+		op->mask = mask;
+		op->val = val;
+		op->masked = true;
+		hw->debug_csihost_program_committed = false;
+		hw->debug_csihost_program_enable = false;
+		goto out;
+	}
+	if (sscanf(buf, "%7s %7s %x %x", cmd, sub, &reg, &val) == 4 &&
+	    !strcmp(cmd, "append") && !strcmp(sub, "w")) {
+		if (!csi2_hw_debug_reg_valid(hw, reg)) {
+			ret = -ERANGE;
+			goto out;
+		}
+		op = &hw->debug_csihost_program[hw->debug_csihost_program_count++];
+		op->reg = reg;
+		op->val = val;
+		op->masked = false;
+		hw->debug_csihost_program_committed = false;
+		hw->debug_csihost_program_enable = false;
+		goto out;
+	}
+	ret = -EINVAL;
+out:
+	mutex_unlock(&hw->lock);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_csihost_program);
+
+static int csi2_hw_debug_apply_program(struct csi2_hw *hw)
+{
+	u32 i, old, val;
+
+	if (!hw->debug_csihost_enable || !hw->debug_csihost_program_enable ||
+	    !hw->debug_csihost_program_committed)
+		return 0;
+	for (i = 0; i < hw->debug_csihost_program_count; i++) {
+		struct csi2_hw_debug_op *op = &hw->debug_csihost_program[i];
+		if (op->masked) {
+			old = read_csihost_reg(hw->base, op->reg);
+			val = (old & ~op->mask) | (op->val & op->mask);
+			write_csihost_reg(hw->base, op->reg, val);
+		} else {
+			write_csihost_reg(hw->base, op->reg, op->val);
+		}
+	}
+	hw->debug_csihost_program_apply_count++;
+	hw->debug_csihost_program_last_ret = 0;
+	dev_info(hw->dev, "debug csihost program apply count=%u ops=%u\n",
+		 hw->debug_csihost_program_apply_count, hw->debug_csihost_program_count);
+	return 0;
+}
+
+static ssize_t debug_csihost_state_show(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	struct csi2_hw *hw = dev_get_drvdata(dev);
+	u32 lanes = 0, phy_state = 0, err1 = 0, err2 = 0, msk1 = 0, msk2 = 0, ctrl = 0;
+	bool temporary;
+	int ret;
+
+	if (!hw->debug_csihost_enable)
+		return scnprintf(buf, PAGE_SIZE,
+			"build=imx415_fullcontrol_csihost_v1 enable=0 reg_ops=%u program_enable=%u program_committed=%u program_count=%u program_apply_count=%u\n",
+			hw->debug_csihost_reg_ops, hw->debug_csihost_program_enable ? 1 : 0,
+			hw->debug_csihost_program_committed ? 1 : 0,
+			hw->debug_csihost_program_count, hw->debug_csihost_program_apply_count);
+	ret = csi2_hw_debug_clk_get(hw, &temporary);
+	if (ret)
+		return ret;
+	mutex_lock(&hw->lock);
+	lanes = read_csihost_reg(hw->base, CSIHOST_N_LANES);
+	phy_state = read_csihost_reg(hw->base, CSIHOST_PHY_STATE);
+	err1 = read_csihost_reg(hw->base, CSIHOST_ERR1);
+	err2 = read_csihost_reg(hw->base, CSIHOST_ERR2);
+	msk1 = read_csihost_reg(hw->base, CSIHOST_MSK1);
+	msk2 = read_csihost_reg(hw->base, CSIHOST_MSK2);
+	ctrl = read_csihost_reg(hw->base, CSIHOST_CONTROL);
+	mutex_unlock(&hw->lock);
+	csi2_hw_debug_clk_put(hw, temporary);
+	return scnprintf(buf, PAGE_SIZE,
+		"build=imx415_fullcontrol_csihost_v1 enable=1 streaming=%u reg_ops=%u program_enable=%u program_committed=%u program_count=%u program_generation=%u program_apply_count=%u last_ret=%d\n"
+		"N_LANES=0x%08x PHY_STATE=0x%08x ERR1=0x%08x ERR2=0x%08x MSK1=0x%08x MSK2=0x%08x CONTROL=0x%08x\n",
+		csi2_hw_debug_streaming(hw) ? 1 : 0, hw->debug_csihost_reg_ops,
+		hw->debug_csihost_program_enable ? 1 : 0,
+		hw->debug_csihost_program_committed ? 1 : 0,
+		hw->debug_csihost_program_count, hw->debug_csihost_program_generation,
+		hw->debug_csihost_program_apply_count, hw->debug_csihost_program_last_ret,
+		lanes, phy_state, err1, err2, msk1, msk2, ctrl);
+}
+static DEVICE_ATTR_RO(debug_csihost_state);
+
+static struct attribute *csi2_hw_debug_attrs[] = {
+	&dev_attr_debug_csihost_enable.attr,
+	&dev_attr_debug_csihost_reg.attr,
+	&dev_attr_debug_csihost_program.attr,
+	&dev_attr_debug_csihost_state.attr,
+	NULL,
+};
+
+static const struct attribute_group csi2_hw_debug_attr_group = {
+	.attrs = csi2_hw_debug_attrs,
+};
+
 static void csi2_disable(struct csi2_hw *csi2_hw)
 {
 	write_csihost_reg(csi2_hw->base, CSIHOST_RESETN, 0);
@@ -265,6 +577,7 @@ static int csi2_start(struct csi2_dev *csi2)
 		enable_irq(csi2->csi2_hw[csi_idx]->irq1);
 		enable_irq(csi2->csi2_hw[csi_idx]->irq2);
 		csi2_enable(csi2->csi2_hw[csi_idx], host_type);
+		csi2_hw_debug_apply_program(csi2->csi2_hw[csi_idx]);
 	}
 
 	pr_debug("stream sd: %s\n", csi2->src_sd->name);
@@ -1397,6 +1710,7 @@ static int csi2_hw_probe(struct platform_device *pdev)
 
 	csi2_hw->dev = &pdev->dev;
 	csi2_hw->match_data = data;
+	mutex_init(&csi2_hw->lock);
 
 	csi2_hw->dev_name = node->name;
 
@@ -1460,13 +1774,27 @@ static int csi2_hw_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "No found irq csi-intr2\n");
 	}
 	platform_set_drvdata(pdev, csi2_hw);
-	dev_info(&pdev->dev, "probe success, v4l2_dev:%s!\n", csi2_hw->dev_name);
+	ret = sysfs_create_group(&pdev->dev.kobj, &csi2_hw_debug_attr_group);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to create csihost debug sysfs group: %d\n", ret);
+		mutex_destroy(&csi2_hw->lock);
+		return ret;
+	}
+	csi2_hw->debug_csihost_sysfs_created = true;
+	dev_info(&pdev->dev, "probe success, v4l2_dev:%s, fullcontrol csihost debug sysfs enabled!\n",
+		 csi2_hw->dev_name);
 
 	return 0;
 }
 
 static int csi2_hw_remove(struct platform_device *pdev)
 {
+	struct csi2_hw *csi2_hw = platform_get_drvdata(pdev);
+
+	if (csi2_hw && csi2_hw->debug_csihost_sysfs_created)
+		sysfs_remove_group(&pdev->dev.kobj, &csi2_hw_debug_attr_group);
+	if (csi2_hw)
+		mutex_destroy(&csi2_hw->lock);
 	return 0;
 }
 

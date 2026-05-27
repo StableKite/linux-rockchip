@@ -63,6 +63,24 @@ struct csi2_sensor {
 struct csi2_dphy_hw;
 struct samsung_mipi_dcphy;
 
+enum csi2_dphy_debug_param_policy {
+	CSI2_DPHY_DEBUG_PARAM_NATIVE = 0,
+	CSI2_DPHY_DEBUG_PARAM_DEFAULT,
+	CSI2_DPHY_DEBUG_PARAM_SENSOR_REQUIRED,
+	CSI2_DPHY_DEBUG_PARAM_FORCE,
+};
+
+enum csi2_dphy_debug_rate_policy {
+	CSI2_DPHY_DEBUG_RATE_NATIVE = 0,
+	CSI2_DPHY_DEBUG_RATE_FORCE,
+};
+
+enum csi2_dphy_debug_param_source {
+	CSI2_DPHY_DEBUG_SOURCE_DEFAULT = 0,
+	CSI2_DPHY_DEBUG_SOURCE_SENSOR,
+	CSI2_DPHY_DEBUG_SOURCE_FORCE,
+};
+
 struct dphy_drv_data {
 	const char dev_name[MAX_DEV_NAME_LEN];
 	enum csi2_dphy_chip_id chip_id;
@@ -91,6 +109,21 @@ struct csi2_dphy {
 	int lane_mode;
 	const struct dphy_drv_data *drv_data;
 	struct rkmodule_csi_dphy_param dphy_param;
+
+	/* Userspace-gated laboratory control plane; inert unless debug_rx_enable=1. */
+	bool debug_rx_enable;
+	bool debug_rx_sysfs_created;
+	u8 debug_rx_param_policy;
+	u8 debug_rx_rate_policy;
+	u8 debug_rx_last_param_source;
+	u64 debug_rx_force_data_rate_mbps;
+	u64 debug_rx_native_data_rate_mbps;
+	struct rkmodule_csi_dphy_param debug_rx_force_param;
+	struct rkmodule_csi_dphy_param debug_rx_sensor_param;
+	int debug_rx_sensor_param_ret;
+	u32 debug_rx_update_count;
+	u32 debug_rx_stream_on_count;
+	int debug_rx_last_stream_ret;
 };
 
 struct dphy_hw_drv_data {

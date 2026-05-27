@@ -15,6 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <linux/mfd/syscon.h>
 #include <media/media-entity.h>
 #include <media/v4l2-ctrls.h>
@@ -48,6 +50,331 @@ static inline struct csi2_dphy *to_csi2_dphy(struct v4l2_subdev *subdev)
 {
 	return container_of(subdev, struct csi2_dphy, sd);
 }
+
+static struct csi2_dphy *csi2_dphy_from_dev(struct device *dev)
+{
+	struct media_entity *me = dev_get_drvdata(dev);
+	struct v4l2_subdev *sd;
+
+	if (!me)
+		return NULL;
+	sd = media_entity_to_v4l2_subdev(me);
+	return to_csi2_dphy(sd);
+}
+
+static const char *csi2_dphy_debug_param_policy_name(u8 policy)
+{
+	switch (policy) {
+	case CSI2_DPHY_DEBUG_PARAM_DEFAULT:
+		return "default";
+	case CSI2_DPHY_DEBUG_PARAM_SENSOR_REQUIRED:
+		return "sensor";
+	case CSI2_DPHY_DEBUG_PARAM_FORCE:
+		return "force";
+	default:
+		return "native";
+	}
+}
+
+static const char *csi2_dphy_debug_rate_policy_name(u8 policy)
+{
+	return policy == CSI2_DPHY_DEBUG_RATE_FORCE ? "force" : "native";
+}
+
+static const char *csi2_dphy_debug_source_name(u8 source)
+{
+	switch (source) {
+	case CSI2_DPHY_DEBUG_SOURCE_SENSOR:
+		return "sensor";
+	case CSI2_DPHY_DEBUG_SOURCE_FORCE:
+		return "force";
+	default:
+		return "default";
+	}
+}
+
+static ssize_t debug_rx_enable_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+
+	if (!dphy)
+		return -ENODEV;
+	return scnprintf(buf, PAGE_SIZE, "%u\n", dphy->debug_rx_enable ? 1 : 0);
+}
+
+static ssize_t debug_rx_enable_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+	bool val;
+	int ret;
+
+	if (!dphy)
+		return -ENODEV;
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+	mutex_lock(&dphy->mutex);
+	if (dphy->is_streaming) {
+		ret = -EBUSY;
+	} else {
+		dphy->debug_rx_enable = val;
+		ret = 0;
+	}
+	mutex_unlock(&dphy->mutex);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_rx_enable);
+
+static ssize_t debug_rx_policy_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+
+	if (!dphy)
+		return -ENODEV;
+	return scnprintf(buf, PAGE_SIZE,
+		"enable=%u param=%s rate=%s force_rate_mbps=%llu last_native_rate_mbps=%llu last_source=%s sensor_ret=%d update_count=%u stream_on_count=%u last_stream_ret=%d\n"
+		"write: reset | param=native|default|sensor|force rate=native|force rate_mbps=<n>\n",
+		dphy->debug_rx_enable ? 1 : 0,
+		csi2_dphy_debug_param_policy_name(dphy->debug_rx_param_policy),
+		csi2_dphy_debug_rate_policy_name(dphy->debug_rx_rate_policy),
+		dphy->debug_rx_force_data_rate_mbps,
+		dphy->debug_rx_native_data_rate_mbps,
+		csi2_dphy_debug_source_name(dphy->debug_rx_last_param_source),
+		dphy->debug_rx_sensor_param_ret,
+		dphy->debug_rx_update_count, dphy->debug_rx_stream_on_count,
+		dphy->debug_rx_last_stream_ret);
+}
+
+static ssize_t debug_rx_policy_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+	char *tmp, *p, *tok, *eq;
+	u64 rate;
+	int ret = 0;
+
+	if (!dphy)
+		return -ENODEV;
+	if (!dphy->debug_rx_enable)
+		return -EPERM;
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+	mutex_lock(&dphy->mutex);
+	if (dphy->is_streaming) {
+		ret = -EBUSY;
+		goto out;
+	}
+	p = strim(tmp);
+	if (sysfs_streq(p, "reset")) {
+		dphy->debug_rx_param_policy = CSI2_DPHY_DEBUG_PARAM_NATIVE;
+		dphy->debug_rx_rate_policy = CSI2_DPHY_DEBUG_RATE_NATIVE;
+		dphy->debug_rx_force_data_rate_mbps = 0;
+		dphy->debug_rx_force_param = rk3588_dcphy_param;
+		goto out;
+	}
+	p = tmp;
+	while ((tok = strsep(&p, " \t\n,")) != NULL) {
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		eq = strchr(tok, '=');
+		if (!eq) {
+			ret = -EINVAL;
+			break;
+		}
+		*eq = '\0';
+		if (!strcmp(tok, "param")) {
+			if (!strcmp(eq + 1, "native"))
+				dphy->debug_rx_param_policy = CSI2_DPHY_DEBUG_PARAM_NATIVE;
+			else if (!strcmp(eq + 1, "default"))
+				dphy->debug_rx_param_policy = CSI2_DPHY_DEBUG_PARAM_DEFAULT;
+			else if (!strcmp(eq + 1, "sensor"))
+				dphy->debug_rx_param_policy = CSI2_DPHY_DEBUG_PARAM_SENSOR_REQUIRED;
+			else if (!strcmp(eq + 1, "force"))
+				dphy->debug_rx_param_policy = CSI2_DPHY_DEBUG_PARAM_FORCE;
+			else
+				ret = -EINVAL;
+		} else if (!strcmp(tok, "rate")) {
+			if (!strcmp(eq + 1, "native"))
+				dphy->debug_rx_rate_policy = CSI2_DPHY_DEBUG_RATE_NATIVE;
+			else if (!strcmp(eq + 1, "force"))
+				dphy->debug_rx_rate_policy = CSI2_DPHY_DEBUG_RATE_FORCE;
+			else
+				ret = -EINVAL;
+		} else if (!strcmp(tok, "rate_mbps")) {
+			ret = kstrtou64(eq + 1, 0, &rate);
+			if (!ret) {
+				if (!rate || rate > 10000)
+					ret = -ERANGE;
+				else
+					dphy->debug_rx_force_data_rate_mbps = rate;
+			}
+		} else {
+			ret = -EINVAL;
+		}
+		if (ret)
+			break;
+	}
+out:
+	mutex_unlock(&dphy->mutex);
+	kfree(tmp);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_rx_policy);
+
+static int csi2_dphy_debug_param_set_one(struct csi2_dphy *dphy,
+					 char *key, char *val)
+{
+	struct rkmodule_csi_dphy_param *p = &dphy->debug_rx_force_param;
+	u32 v;
+	int ret;
+
+	ret = kstrtou32(val, 0, &v);
+	if (ret)
+		return ret;
+	if (!strcmp(key, "vendor")) p->vendor = v;
+	else if (!strcmp(key, "lp_vol_ref")) p->lp_vol_ref = v;
+	else if (!strcmp(key, "lp_hys0")) p->lp_hys_sw[0] = v;
+	else if (!strcmp(key, "lp_hys1")) p->lp_hys_sw[1] = v;
+	else if (!strcmp(key, "lp_hys2")) p->lp_hys_sw[2] = v;
+	else if (!strcmp(key, "lp_hys3")) p->lp_hys_sw[3] = v;
+	else if (!strcmp(key, "esc0")) p->lp_escclk_pol_sel[0] = v;
+	else if (!strcmp(key, "esc1")) p->lp_escclk_pol_sel[1] = v;
+	else if (!strcmp(key, "esc2")) p->lp_escclk_pol_sel[2] = v;
+	else if (!strcmp(key, "esc3")) p->lp_escclk_pol_sel[3] = v;
+	else if (!strcmp(key, "skew0")) p->skew_data_cal_clk[0] = v;
+	else if (!strcmp(key, "skew1")) p->skew_data_cal_clk[1] = v;
+	else if (!strcmp(key, "skew2")) p->skew_data_cal_clk[2] = v;
+	else if (!strcmp(key, "skew3")) p->skew_data_cal_clk[3] = v;
+	else if (!strcmp(key, "clk_term")) p->clk_hs_term_sel = v;
+	else if (!strcmp(key, "data_term0")) p->data_hs_term_sel[0] = v;
+	else if (!strcmp(key, "data_term1")) p->data_hs_term_sel[1] = v;
+	else if (!strcmp(key, "data_term2")) p->data_hs_term_sel[2] = v;
+	else if (!strcmp(key, "data_term3")) p->data_hs_term_sel[3] = v;
+	else return -EINVAL;
+	return 0;
+}
+
+static ssize_t debug_rx_param_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+	const struct rkmodule_csi_dphy_param *p;
+
+	if (!dphy)
+		return -ENODEV;
+	p = &dphy->debug_rx_force_param;
+	return scnprintf(buf, PAGE_SIZE,
+		"force vendor=%u lp_vol_ref=%u lp_hys=%u,%u,%u,%u esc=%u,%u,%u,%u skew=%u,%u,%u,%u clk_term=%u data_term=%u,%u,%u,%u\n"
+		"write: reset | vendor=<n> lp_vol_ref=<n> lp_hys0..3=<n> esc0..3=<n> skew0..3=<n> clk_term=<n> data_term0..3=<n>\n",
+		p->vendor, p->lp_vol_ref,
+		p->lp_hys_sw[0], p->lp_hys_sw[1], p->lp_hys_sw[2], p->lp_hys_sw[3],
+		p->lp_escclk_pol_sel[0], p->lp_escclk_pol_sel[1],
+		p->lp_escclk_pol_sel[2], p->lp_escclk_pol_sel[3],
+		p->skew_data_cal_clk[0], p->skew_data_cal_clk[1],
+		p->skew_data_cal_clk[2], p->skew_data_cal_clk[3],
+		p->clk_hs_term_sel, p->data_hs_term_sel[0],
+		p->data_hs_term_sel[1], p->data_hs_term_sel[2],
+		p->data_hs_term_sel[3]);
+}
+
+static ssize_t debug_rx_param_store(struct device *dev,
+				    struct device_attribute *attr,
+				    const char *buf, size_t count)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+	char *tmp, *p, *tok, *eq;
+	int ret = 0;
+
+	if (!dphy)
+		return -ENODEV;
+	if (!dphy->debug_rx_enable)
+		return -EPERM;
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+	mutex_lock(&dphy->mutex);
+	if (dphy->is_streaming) {
+		ret = -EBUSY;
+		goto out;
+	}
+	p = strim(tmp);
+	if (sysfs_streq(p, "reset")) {
+		dphy->debug_rx_force_param = rk3588_dcphy_param;
+		goto out;
+	}
+	p = tmp;
+	while ((tok = strsep(&p, " \t\n,")) != NULL) {
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		eq = strchr(tok, '=');
+		if (!eq) {
+			ret = -EINVAL;
+			break;
+		}
+		*eq = '\0';
+		ret = csi2_dphy_debug_param_set_one(dphy, tok, eq + 1);
+		if (ret)
+			break;
+	}
+out:
+	mutex_unlock(&dphy->mutex);
+	kfree(tmp);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_rx_param);
+
+static ssize_t debug_rx_state_show(struct device *dev,
+				   struct device_attribute *attr, char *buf)
+{
+	struct csi2_dphy *dphy = csi2_dphy_from_dev(dev);
+	const struct rkmodule_csi_dphy_param *p;
+
+	if (!dphy)
+		return -ENODEV;
+	p = &dphy->dphy_param;
+	return scnprintf(buf, PAGE_SIZE,
+		"build=imx415_fullcontrol_rx_v1 enable=%u streaming=%u phy_index=%d chip_id=%d data_rate_mbps=%llu native_rate_mbps=%llu rate_policy=%s force_rate_mbps=%llu param_policy=%s last_source=%s sensor_ret=%d update_count=%u stream_on_count=%u last_stream_ret=%d\n"
+		"applied vendor=%u lp_vol_ref=%u lp_hys=%u,%u,%u,%u esc=%u,%u,%u,%u skew=%u,%u,%u,%u clk_term=%u data_term=%u,%u,%u,%u\n",
+		dphy->debug_rx_enable ? 1 : 0, dphy->is_streaming ? 1 : 0,
+		dphy->phy_index, dphy->drv_data->chip_id, dphy->data_rate_mbps,
+		dphy->debug_rx_native_data_rate_mbps,
+		csi2_dphy_debug_rate_policy_name(dphy->debug_rx_rate_policy),
+		dphy->debug_rx_force_data_rate_mbps,
+		csi2_dphy_debug_param_policy_name(dphy->debug_rx_param_policy),
+		csi2_dphy_debug_source_name(dphy->debug_rx_last_param_source),
+		dphy->debug_rx_sensor_param_ret, dphy->debug_rx_update_count,
+		dphy->debug_rx_stream_on_count, dphy->debug_rx_last_stream_ret,
+		p->vendor, p->lp_vol_ref,
+		p->lp_hys_sw[0], p->lp_hys_sw[1], p->lp_hys_sw[2], p->lp_hys_sw[3],
+		p->lp_escclk_pol_sel[0], p->lp_escclk_pol_sel[1],
+		p->lp_escclk_pol_sel[2], p->lp_escclk_pol_sel[3],
+		p->skew_data_cal_clk[0], p->skew_data_cal_clk[1],
+		p->skew_data_cal_clk[2], p->skew_data_cal_clk[3],
+		p->clk_hs_term_sel, p->data_hs_term_sel[0],
+		p->data_hs_term_sel[1], p->data_hs_term_sel[2],
+		p->data_hs_term_sel[3]);
+}
+static DEVICE_ATTR_RO(debug_rx_state);
+
+static struct attribute *csi2_dphy_debug_attrs[] = {
+	&dev_attr_debug_rx_enable.attr,
+	&dev_attr_debug_rx_policy.attr,
+	&dev_attr_debug_rx_param.attr,
+	&dev_attr_debug_rx_state.attr,
+	NULL,
+};
+
+static const struct attribute_group csi2_dphy_debug_attr_group = {
+	.attrs = csi2_dphy_debug_attrs,
+};
 
 static struct v4l2_subdev *get_remote_sensor(struct v4l2_subdev *sd)
 {
@@ -110,6 +437,15 @@ static int csi2_dphy_get_sensor_data_rate(struct v4l2_subdev *sd)
 	}
 	dphy->data_rate_mbps = qm.value * 2;
 	do_div(dphy->data_rate_mbps, 1000 * 1000);
+	dphy->debug_rx_native_data_rate_mbps = dphy->data_rate_mbps;
+	if (dphy->debug_rx_enable &&
+	    dphy->debug_rx_rate_policy == CSI2_DPHY_DEBUG_RATE_FORCE &&
+	    dphy->debug_rx_force_data_rate_mbps) {
+		dphy->data_rate_mbps = dphy->debug_rx_force_data_rate_mbps;
+		v4l2_info(sd, "debug rx forced data_rate_mbps %lld (native %lld)\n",
+			  dphy->data_rate_mbps,
+			  dphy->debug_rx_native_data_rate_mbps);
+	}
 	v4l2_info(sd, "dphy%d, data_rate_mbps %lld\n",
 		  dphy->phy_index, dphy->data_rate_mbps);
 	return 0;
@@ -513,11 +849,38 @@ static int csi2_dphy_update_config(struct v4l2_subdev *sd)
 			}
 		}
 	}
-	ret = v4l2_subdev_call(sensor_sd, core, ioctl,
-			       RKMODULE_GET_CSI_DPHY_PARAM,
-			       &dphy_param);
-	if (!ret)
-		dphy->dphy_param = dphy_param;
+	/* Samsung receiver profile selection: native operation is preserved unless
+	 * the explicit userspace laboratory gate is enabled.
+	 */
+	dphy->dphy_param = rk3588_dcphy_param;
+	dphy->debug_rx_last_param_source = CSI2_DPHY_DEBUG_SOURCE_DEFAULT;
+	dphy->debug_rx_sensor_param_ret = -EOPNOTSUPP;
+
+	if (dphy->debug_rx_enable &&
+	    dphy->debug_rx_param_policy == CSI2_DPHY_DEBUG_PARAM_FORCE) {
+		dphy->dphy_param = dphy->debug_rx_force_param;
+		dphy->debug_rx_last_param_source = CSI2_DPHY_DEBUG_SOURCE_FORCE;
+		dev_info(dphy->dev,
+			 "debug rx forced dphy param lp_vol_ref=%u clk_term=%u\n",
+			 dphy->dphy_param.lp_vol_ref,
+			 dphy->dphy_param.clk_hs_term_sel);
+	} else if (!(dphy->debug_rx_enable &&
+		     dphy->debug_rx_param_policy == CSI2_DPHY_DEBUG_PARAM_DEFAULT)) {
+		ret = v4l2_subdev_call(sensor_sd, core, ioctl,
+				       RKMODULE_GET_CSI_DPHY_PARAM,
+				       &dphy_param);
+		dphy->debug_rx_sensor_param_ret = ret;
+		if (!ret) {
+			dphy->debug_rx_sensor_param = dphy_param;
+			dphy->dphy_param = dphy_param;
+			dphy->debug_rx_last_param_source = CSI2_DPHY_DEBUG_SOURCE_SENSOR;
+		} else if (dphy->debug_rx_enable &&
+			   dphy->debug_rx_param_policy == CSI2_DPHY_DEBUG_PARAM_SENSOR_REQUIRED) {
+			dev_err(dphy->dev, "debug rx required sensor dphy param unavailable: %d\n", ret);
+			return ret;
+		}
+	}
+	dphy->debug_rx_update_count++;
 	return 0;
 }
 
@@ -526,6 +889,7 @@ static int csi2_dphy_s_stream_start(struct v4l2_subdev *sd)
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 	int i = 0;
 	int ret = 0;
+	int first_hw_ret = 0;
 
 	ret = csi2_dphy_update_sensor_mbus(sd);
 	if (ret < 0)
@@ -535,15 +899,33 @@ static int csi2_dphy_s_stream_start(struct v4l2_subdev *sd)
 		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
 			dphy->samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
 			if (dphy->samsung_phy && dphy->samsung_phy->stream_on)
-				dphy->samsung_phy->stream_on(dphy, sd);
+				ret = dphy->samsung_phy->stream_on(dphy, sd);
 		} else {
 			dphy->dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
 			if (dphy->dphy_hw && dphy->dphy_hw->stream_on)
-				dphy->dphy_hw->stream_on(dphy, sd);
+				ret = dphy->dphy_hw->stream_on(dphy, sd);
+		}
+		if (ret) {
+			if (!first_hw_ret)
+				first_hw_ret = ret;
+			dphy->debug_rx_last_stream_ret = ret;
+			/* Preserve the vendor driver's native behaviour while debug
+			 * control is disabled: stream_on errors were historically
+			 * observed only in logs and did not abort the upstream chain.
+			 * Once debug_rx_enable is asserted, errors become actionable.
+			 */
+			if (dphy->debug_rx_enable)
+				return ret;
+			dev_warn(dphy->dev,
+				 "rx stream_on returned %d; ignored in native compatibility mode\n",
+				 ret);
+			ret = 0;
 		}
 	}
 
 	dphy->is_streaming = true;
+	dphy->debug_rx_stream_on_count++;
+	dphy->debug_rx_last_stream_ret = first_hw_ret;
 
 	return 0;
 }
@@ -625,6 +1007,7 @@ static int csi2_dphy_s_stream(struct v4l2_subdev *sd, int on)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 	int ret = 0;
+	int i;
 
 	mutex_lock(&dphy->mutex);
 	if (on) {
@@ -642,16 +1025,37 @@ static int csi2_dphy_s_stream(struct v4l2_subdev *sd, int on)
 		csi2_dphy_update_sensor_mbus(sd);
 		ret = csi2_dphy_update_config(sd);
 		if (ret < 0) {
+			for (i = 0; i < dphy->csi_info.csi_num; i++) {
+				if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
+				    dphy->drv_data->chip_id != CHIP_ID_RV1106)
+					rockchip_csi2_dphy_detach_hw(dphy,
+						dphy->csi_info.csi_idx[i], i);
+			}
 			mutex_unlock(&dphy->mutex);
 			return ret;
 		}
 
 		ret = csi2_dphy_enable_clk(dphy);
 		if (ret) {
+			for (i = 0; i < dphy->csi_info.csi_num; i++) {
+				if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
+				    dphy->drv_data->chip_id != CHIP_ID_RV1106)
+					rockchip_csi2_dphy_detach_hw(dphy,
+						dphy->csi_info.csi_idx[i], i);
+			}
 			mutex_unlock(&dphy->mutex);
 			return ret;
 		}
 		ret = csi2_dphy_s_stream_start(sd);
+		if (ret) {
+			csi2_dphy_disable_clk(dphy);
+			for (i = 0; i < dphy->csi_info.csi_num; i++) {
+				if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
+				    dphy->drv_data->chip_id != CHIP_ID_RV1106)
+					rockchip_csi2_dphy_detach_hw(dphy,
+						dphy->csi_info.csi_idx[i], i);
+			}
+		}
 	} else {
 		if (!dphy->is_streaming) {
 			mutex_unlock(&dphy->mutex);
@@ -1181,6 +1585,11 @@ static int rockchip_csi2_dphy_probe(struct platform_device *pdev)
 	if (!csi2dphy)
 		return -ENOMEM;
 	csi2dphy->dev = dev;
+	csi2dphy->debug_rx_param_policy = CSI2_DPHY_DEBUG_PARAM_NATIVE;
+	csi2dphy->debug_rx_rate_policy = CSI2_DPHY_DEBUG_RATE_NATIVE;
+	csi2dphy->debug_rx_last_param_source = CSI2_DPHY_DEBUG_SOURCE_DEFAULT;
+	csi2dphy->debug_rx_force_param = rk3588_dcphy_param;
+	csi2dphy->debug_rx_sensor_param_ret = -EOPNOTSUPP;
 
 	of_id = of_match_device(rockchip_csi2_dphy_match_id, dev);
 	if (!of_id)
@@ -1219,7 +1628,16 @@ static int rockchip_csi2_dphy_probe(struct platform_device *pdev)
 
 	pm_runtime_enable(&pdev->dev);
 
-	dev_info(dev, "csi2 dphy%d probe successfully!\n", csi2dphy->phy_index);
+	ret = sysfs_create_group(&dev->kobj, &csi2_dphy_debug_attr_group);
+	if (ret) {
+		dev_err(dev, "failed to create debug rx sysfs group: %d\n", ret);
+		pm_runtime_disable(&pdev->dev);
+		goto detach_hw;
+	}
+	csi2dphy->debug_rx_sysfs_created = true;
+
+	dev_info(dev, "csi2 dphy%d probe successfully, fullcontrol rx debug sysfs enabled!\n",
+		 csi2dphy->phy_index);
 
 	return 0;
 
@@ -1235,6 +1653,8 @@ static int rockchip_csi2_dphy_remove(struct platform_device *pdev)
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
 	int i = 0;
 
+	if (dphy->debug_rx_sysfs_created)
+		sysfs_remove_group(&pdev->dev.kobj, &csi2_dphy_debug_attr_group);
 	for (i = 0; i < dphy->csi_info.csi_num; i++)
 		rockchip_csi2_dphy_detach_hw(dphy, dphy->csi_info.csi_idx[i], i);
 	media_entity_cleanup(&sd->entity);

@@ -15,6 +15,8 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/slab.h>
+#include <linux/sysfs.h>
 #include <linux/reset.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-fwnode.h>
@@ -1942,6 +1944,392 @@ static int samsung_mipi_dcphy_configure(struct phy *phy,
 	return 0;
 }
 
+static ssize_t debug_dcphy_enable_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", samsung->debug_dcphy_enable ? 1 : 0);
+}
+
+static ssize_t debug_dcphy_enable_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	bool val;
+	int ret;
+
+	ret = kstrtobool(buf, &val);
+	if (ret)
+		return ret;
+	mutex_lock(&samsung->mutex);
+	if (atomic_read(&samsung->stream_cnt))
+		ret = -EBUSY;
+	else {
+		samsung->debug_dcphy_enable = val;
+		ret = 0;
+	}
+	mutex_unlock(&samsung->mutex);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_dcphy_enable);
+
+static ssize_t debug_dcphy_settle_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE,
+		"enable=%u clk_settle=0x%x hsfreq=0x%x sot_sync=0x%x ignore_lane_ready=%u\n"
+		"write: reset | enable=<0|1> clk_settle=<n> hsfreq=<n> sot_sync=<n> ignore_lane_ready=<0|1>\n",
+		samsung->debug_dcphy_settle_override ? 1 : 0,
+		samsung->debug_dcphy_clk_settle,
+		samsung->debug_dcphy_hsfreq,
+		samsung->debug_dcphy_sot_sync,
+		samsung->debug_dcphy_ignore_lane_ready ? 1 : 0);
+}
+
+static ssize_t debug_dcphy_settle_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	char *tmp, *p, *tok, *eq;
+	u32 value;
+	int ret = 0;
+
+	if (!samsung->debug_dcphy_enable)
+		return -EPERM;
+	tmp = kstrdup(buf, GFP_KERNEL);
+	if (!tmp)
+		return -ENOMEM;
+	mutex_lock(&samsung->mutex);
+	if (atomic_read(&samsung->stream_cnt)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	p = strim(tmp);
+	if (sysfs_streq(p, "reset")) {
+		samsung->debug_dcphy_settle_override = false;
+		samsung->debug_dcphy_ignore_lane_ready = false;
+		samsung->debug_dcphy_clk_settle = 0x301;
+		samsung->debug_dcphy_hsfreq = 0;
+		samsung->debug_dcphy_sot_sync = 0x03;
+		goto out;
+	}
+	p = tmp;
+	while ((tok = strsep(&p, " \t\n,")) != NULL) {
+		tok = strim(tok);
+		if (!*tok)
+			continue;
+		eq = strchr(tok, '=');
+		if (!eq) {
+			ret = -EINVAL;
+			break;
+		}
+		*eq = '\0';
+		ret = kstrtou32(eq + 1, 0, &value);
+		if (ret)
+			break;
+		if (!strcmp(tok, "enable"))
+			samsung->debug_dcphy_settle_override = !!value;
+		else if (!strcmp(tok, "ignore_lane_ready"))
+			samsung->debug_dcphy_ignore_lane_ready = !!value;
+		else if (!strcmp(tok, "clk_settle"))
+			samsung->debug_dcphy_clk_settle = value;
+		else if (!strcmp(tok, "hsfreq"))
+			samsung->debug_dcphy_hsfreq = value;
+		else if (!strcmp(tok, "sot_sync"))
+			samsung->debug_dcphy_sot_sync = value;
+		else {
+			ret = -EINVAL;
+			break;
+		}
+	}
+out:
+	mutex_unlock(&samsung->mutex);
+	kfree(tmp);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_dcphy_settle);
+
+static ssize_t debug_dcphy_reg_show(struct device *dev,
+				    struct device_attribute *attr, char *buf)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE,
+		"last_reg=0x%04x last_val=0x%08x ops=%u\n"
+		"write: r <reg> | w <reg> <val> | mw <reg> <mask> <val>\n",
+		samsung->debug_dcphy_reg_addr, samsung->debug_dcphy_reg_last,
+		samsung->debug_dcphy_reg_ops);
+}
+
+static ssize_t debug_dcphy_reg_store(struct device *dev,
+				     struct device_attribute *attr,
+				     const char *buf, size_t count)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	char op[4];
+	u32 reg, mask, val;
+	int ret, pmret;
+
+	if (!samsung->debug_dcphy_enable)
+		return -EPERM;
+	pmret = pm_runtime_get_sync(dev);
+	if (pmret < 0) {
+		pm_runtime_put_noidle(dev);
+		return pmret;
+	}
+	mutex_lock(&samsung->mutex);
+	if (sscanf(buf, "%3s %x %x %x", op, &reg, &mask, &val) == 4 &&
+	    !strcmp(op, "mw")) {
+		ret = regmap_update_bits(samsung->regmap, reg, mask, val);
+		if (!ret)
+			ret = regmap_read(samsung->regmap, reg, &val);
+	} else if (sscanf(buf, "%3s %x %x", op, &reg, &val) == 3 &&
+		   !strcmp(op, "w")) {
+		ret = regmap_write(samsung->regmap, reg, val);
+		if (!ret)
+			ret = regmap_read(samsung->regmap, reg, &val);
+	} else if (sscanf(buf, "%3s %x", op, &reg) == 2 &&
+		   !strcmp(op, "r")) {
+		ret = regmap_read(samsung->regmap, reg, &val);
+	} else {
+		ret = -EINVAL;
+		val = 0;
+		reg = 0;
+	}
+	if (!ret) {
+		samsung->debug_dcphy_reg_addr = reg;
+		samsung->debug_dcphy_reg_last = val;
+		samsung->debug_dcphy_reg_ops++;
+	}
+	mutex_unlock(&samsung->mutex);
+	pm_runtime_put(dev);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_dcphy_reg);
+
+static ssize_t debug_dcphy_program_show(struct device *dev,
+					struct device_attribute *attr, char *buf)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	ssize_t len;
+	u32 i;
+
+	len = scnprintf(buf, PAGE_SIZE,
+		"enable=%u committed=%u count=%u generation=%u apply_count=%u last_ret=%d\n"
+		"write one command per echo: clear | append w <reg> <val> | append mw <reg> <mask> <val> | commit | enable <0|1>\n",
+		samsung->debug_dcphy_program_enable ? 1 : 0,
+		samsung->debug_dcphy_program_committed ? 1 : 0,
+		samsung->debug_dcphy_program_count,
+		samsung->debug_dcphy_program_generation,
+		samsung->debug_dcphy_program_apply_count,
+		samsung->debug_dcphy_program_last_ret);
+	for (i = 0; i < samsung->debug_dcphy_program_count && len < PAGE_SIZE - 64; i++) {
+		struct samsung_dcphy_debug_op *op = &samsung->debug_dcphy_program[i];
+		if (op->masked)
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+				"%u: mw 0x%04x 0x%08x 0x%08x\n",
+				i, op->reg, op->mask, op->val);
+		else
+			len += scnprintf(buf + len, PAGE_SIZE - len,
+				"%u: w 0x%04x 0x%08x\n", i, op->reg, op->val);
+	}
+	return len;
+}
+
+static ssize_t debug_dcphy_program_store(struct device *dev,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	struct samsung_dcphy_debug_op *op;
+	char cmd[8], sub[8];
+	u32 reg, mask, val, enable;
+	int ret = 0;
+
+	if (!samsung->debug_dcphy_enable)
+		return -EPERM;
+	mutex_lock(&samsung->mutex);
+	if (atomic_read(&samsung->stream_cnt)) {
+		ret = -EBUSY;
+		goto out;
+	}
+	if (sysfs_streq(buf, "clear")) {
+		memset(samsung->debug_dcphy_program, 0,
+		       sizeof(samsung->debug_dcphy_program));
+		samsung->debug_dcphy_program_count = 0;
+		samsung->debug_dcphy_program_enable = false;
+		samsung->debug_dcphy_program_committed = false;
+		goto out;
+	}
+	if (sysfs_streq(buf, "commit")) {
+		if (!samsung->debug_dcphy_program_count) {
+			ret = -EINVAL;
+			goto out;
+		}
+		samsung->debug_dcphy_program_committed = true;
+		samsung->debug_dcphy_program_generation++;
+		goto out;
+	}
+	if (sscanf(buf, "%7s %u", cmd, &enable) == 2 && !strcmp(cmd, "enable")) {
+		if (enable && !samsung->debug_dcphy_program_committed) {
+			ret = -EINVAL;
+			goto out;
+		}
+		samsung->debug_dcphy_program_enable = !!enable;
+		goto out;
+	}
+	if (samsung->debug_dcphy_program_count >= SAMSUNG_DCPHY_DEBUG_MAX_OPS) {
+		ret = -ENOSPC;
+		goto out;
+	}
+	if (sscanf(buf, "%7s %7s %x %x %x", cmd, sub, &reg, &mask, &val) == 5 &&
+	    !strcmp(cmd, "append") && !strcmp(sub, "mw")) {
+		op = &samsung->debug_dcphy_program[samsung->debug_dcphy_program_count++];
+		op->reg = reg;
+		op->mask = mask;
+		op->val = val;
+		op->masked = true;
+		samsung->debug_dcphy_program_committed = false;
+		samsung->debug_dcphy_program_enable = false;
+		goto out;
+	}
+	if (sscanf(buf, "%7s %7s %x %x", cmd, sub, &reg, &val) == 4 &&
+	    !strcmp(cmd, "append") && !strcmp(sub, "w")) {
+		op = &samsung->debug_dcphy_program[samsung->debug_dcphy_program_count++];
+		op->reg = reg;
+		op->val = val;
+		op->masked = false;
+		samsung->debug_dcphy_program_committed = false;
+		samsung->debug_dcphy_program_enable = false;
+		goto out;
+	}
+	ret = -EINVAL;
+out:
+	mutex_unlock(&samsung->mutex);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_RW(debug_dcphy_program);
+
+static int samsung_dcphy_debug_apply_program(struct samsung_mipi_dcphy *samsung)
+{
+	u32 i;
+	int ret = 0;
+
+	if (!samsung->debug_dcphy_enable || !samsung->debug_dcphy_program_enable ||
+	    !samsung->debug_dcphy_program_committed)
+		return 0;
+	for (i = 0; i < samsung->debug_dcphy_program_count; i++) {
+		struct samsung_dcphy_debug_op *op = &samsung->debug_dcphy_program[i];
+		if (op->masked)
+			ret = regmap_update_bits(samsung->regmap, op->reg, op->mask, op->val);
+		else
+			ret = regmap_write(samsung->regmap, op->reg, op->val);
+		if (ret)
+			break;
+	}
+	samsung->debug_dcphy_program_last_ret = ret;
+	if (!ret)
+		samsung->debug_dcphy_program_apply_count++;
+	dev_info(samsung->dev, "debug dcphy program apply count=%u ops=%u ret=%d\n",
+		 samsung->debug_dcphy_program_apply_count,
+		 samsung->debug_dcphy_program_count, ret);
+	return ret;
+}
+
+static ssize_t debug_dcphy_state_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	struct rkmodule_csi_dphy_param *p = &samsung->debug_dcphy_last_param;
+
+	return scnprintf(buf, PAGE_SIZE,
+		"build=imx415_fullcontrol_samsung_dcphy_v1 enable=%u stream_cnt=%d stream_on_count=%u last_stream_ret=%d last_rate_mbps=%llu settle_override=%u clk_settle=0x%x hsfreq=0x%x sot_sync=0x%x ignore_lane_ready=%u reg_ops=%u program_enable=%u program_committed=%u program_count=%u program_generation=%u program_apply_count=%u program_last_ret=%d\n"
+		"last_param vendor=%u lp_vol_ref=%u lp_hys=%u,%u,%u,%u esc=%u,%u,%u,%u skew=%u,%u,%u,%u clk_term=%u data_term=%u,%u,%u,%u\n",
+		samsung->debug_dcphy_enable ? 1 : 0, atomic_read(&samsung->stream_cnt),
+		samsung->debug_dcphy_stream_on_count, samsung->debug_dcphy_last_stream_ret,
+		samsung->debug_dcphy_last_data_rate_mbps,
+		samsung->debug_dcphy_settle_override ? 1 : 0,
+		samsung->debug_dcphy_clk_settle, samsung->debug_dcphy_hsfreq,
+		samsung->debug_dcphy_sot_sync,
+		samsung->debug_dcphy_ignore_lane_ready ? 1 : 0,
+		samsung->debug_dcphy_reg_ops,
+		samsung->debug_dcphy_program_enable ? 1 : 0,
+		samsung->debug_dcphy_program_committed ? 1 : 0,
+		samsung->debug_dcphy_program_count,
+		samsung->debug_dcphy_program_generation,
+		samsung->debug_dcphy_program_apply_count,
+		samsung->debug_dcphy_program_last_ret,
+		p->vendor, p->lp_vol_ref,
+		p->lp_hys_sw[0], p->lp_hys_sw[1], p->lp_hys_sw[2], p->lp_hys_sw[3],
+		p->lp_escclk_pol_sel[0], p->lp_escclk_pol_sel[1],
+		p->lp_escclk_pol_sel[2], p->lp_escclk_pol_sel[3],
+		p->skew_data_cal_clk[0], p->skew_data_cal_clk[1],
+		p->skew_data_cal_clk[2], p->skew_data_cal_clk[3],
+		p->clk_hs_term_sel, p->data_hs_term_sel[0], p->data_hs_term_sel[1],
+		p->data_hs_term_sel[2], p->data_hs_term_sel[3]);
+}
+static DEVICE_ATTR_RO(debug_dcphy_state);
+
+static ssize_t debug_dcphy_snapshot_show(struct device *dev,
+					 struct device_attribute *attr, char *buf)
+{
+	struct samsung_mipi_dcphy *samsung = dev_get_drvdata(dev);
+	u32 bias = 0, clk = 0, hs0 = 0, sot0 = 0, hs1 = 0, sot1 = 0;
+	u32 hs2 = 0, sot2 = 0, hs3 = 0, sot3 = 0, enclk = 0;
+	int ret;
+
+	if (!samsung->debug_dcphy_enable)
+		return -EPERM;
+	ret = pm_runtime_get_sync(dev);
+	if (ret < 0) {
+		pm_runtime_put_noidle(dev);
+		return ret;
+	}
+	mutex_lock(&samsung->mutex);
+	regmap_read(samsung->regmap, BIAS_CON2, &bias);
+	regmap_read(samsung->regmap, RX_CLK_THS_SETTLE, &clk);
+	regmap_read(samsung->regmap, RX_CLK_LANE_ENABLE, &enclk);
+	regmap_read(samsung->regmap, RX_LANE0_THS_SETTLE, &hs0);
+	regmap_read(samsung->regmap, RX_LANE0_ERR_SOT_SYNC, &sot0);
+	regmap_read(samsung->regmap, RX_LANE1_THS_SETTLE, &hs1);
+	regmap_read(samsung->regmap, RX_LANE1_ERR_SOT_SYNC, &sot1);
+	regmap_read(samsung->regmap, RX_LANE2_THS_SETTLE, &hs2);
+	regmap_read(samsung->regmap, RX_LANE2_ERR_SOT_SYNC, &sot2);
+	regmap_read(samsung->regmap, RX_LANE3_THS_SETTLE, &hs3);
+	regmap_read(samsung->regmap, RX_LANE3_ERR_SOT_SYNC, &sot3);
+	mutex_unlock(&samsung->mutex);
+	pm_runtime_put(dev);
+	return scnprintf(buf, PAGE_SIZE,
+		"BIAS_CON2[0x%04x]=0x%08x RX_CLK_THS_SETTLE[0x%04x]=0x%08x RX_CLK_LANE_ENABLE[0x%04x]=0x%08x\n"
+		"LANE0_THS[0x%04x]=0x%08x LANE0_SOT[0x%04x]=0x%08x LANE1_THS[0x%04x]=0x%08x LANE1_SOT[0x%04x]=0x%08x\n"
+		"LANE2_THS[0x%04x]=0x%08x LANE2_SOT[0x%04x]=0x%08x LANE3_THS[0x%04x]=0x%08x LANE3_SOT[0x%04x]=0x%08x\n",
+		BIAS_CON2, bias, RX_CLK_THS_SETTLE, clk, RX_CLK_LANE_ENABLE, enclk,
+		RX_LANE0_THS_SETTLE, hs0, RX_LANE0_ERR_SOT_SYNC, sot0,
+		RX_LANE1_THS_SETTLE, hs1, RX_LANE1_ERR_SOT_SYNC, sot1,
+		RX_LANE2_THS_SETTLE, hs2, RX_LANE2_ERR_SOT_SYNC, sot2,
+		RX_LANE3_THS_SETTLE, hs3, RX_LANE3_ERR_SOT_SYNC, sot3);
+}
+static DEVICE_ATTR_RO(debug_dcphy_snapshot);
+
+static struct attribute *samsung_dcphy_debug_attrs[] = {
+	&dev_attr_debug_dcphy_enable.attr,
+	&dev_attr_debug_dcphy_settle.attr,
+	&dev_attr_debug_dcphy_reg.attr,
+	&dev_attr_debug_dcphy_program.attr,
+	&dev_attr_debug_dcphy_state.attr,
+	&dev_attr_debug_dcphy_snapshot.attr,
+	NULL,
+};
+
+static const struct attribute_group samsung_dcphy_debug_attr_group = {
+	.attrs = samsung_dcphy_debug_attrs,
+};
+
 static struct v4l2_subdev *get_remote_sensor(struct v4l2_subdev *sd)
 {
 	struct media_pad *local, *remote;
@@ -2006,9 +2394,19 @@ static void samsung_dcphy_rx_config_settle(struct csi2_dphy *dphy,
 			 dphy->data_rate_mbps, hsfreq_ranges[i].range_h + 1);
 		hsfreq = hsfreq_ranges[i].cfg_bit;
 	}
-	/*clk settle fix to 0x301*/
+	if (samsung->debug_dcphy_enable && samsung->debug_dcphy_settle_override) {
+		hsfreq = samsung->debug_dcphy_hsfreq;
+		sot_sync = samsung->debug_dcphy_sot_sync;
+		dev_info(samsung->dev,
+			 "debug dcphy forced settle rate=%llu clk=0x%x hs=0x%x sot=0x%x\n",
+			 dphy->data_rate_mbps, samsung->debug_dcphy_clk_settle,
+			 hsfreq, sot_sync);
+	}
+	/*clk settle fix to 0x301 unless userspace explicitly overrides it*/
 	if (sensor->mbus.type == V4L2_MBUS_CSI2_DPHY)
-		regmap_write(samsung->regmap, RX_CLK_THS_SETTLE, 0x301);
+		regmap_write(samsung->regmap, RX_CLK_THS_SETTLE,
+			(samsung->debug_dcphy_enable && samsung->debug_dcphy_settle_override) ?
+			samsung->debug_dcphy_clk_settle : 0x301);
 
 	if (sensor->lanes > 0x00) {
 		regmap_update_bits(samsung->regmap, RX_LANE0_THS_SETTLE, 0x1ff, hsfreq);
@@ -2217,7 +2615,9 @@ static int samsung_dcphy_rx_lane_enable(struct csi2_dphy *dphy,
 				       sts, (sts & PHY_READY), 200, 4000);
 		if (ret < 0) {
 			dev_err(samsung->dev, "phy rx clk lane is not locked\n");
-			return -EINVAL;
+			if (!samsung->debug_dcphy_enable || !samsung->debug_dcphy_ignore_lane_ready)
+				return -EINVAL;
+			dev_warn(samsung->dev, "debug dcphy ignoring clk lane ready timeout\n");
 		}
 	}
 
@@ -2227,7 +2627,9 @@ static int samsung_dcphy_rx_lane_enable(struct csi2_dphy *dphy,
 				       sts, (sts & PHY_READY), 200, 2000);
 		if (ret < 0) {
 			dev_err(samsung->dev, "phy rx data lane 0 is not locked\n");
-			return -EINVAL;
+			if (!samsung->debug_dcphy_enable || !samsung->debug_dcphy_ignore_lane_ready)
+				return -EINVAL;
+			dev_warn(samsung->dev, "debug dcphy ignoring data lane 0 ready timeout\n");
 		}
 	}
 	if (sensor->lanes > 0x01) {
@@ -2235,7 +2637,9 @@ static int samsung_dcphy_rx_lane_enable(struct csi2_dphy *dphy,
 				       sts, (sts & PHY_READY), 200, 2000);
 		if (ret < 0) {
 			dev_err(samsung->dev, "phy rx data lane 1 is not locked\n");
-			return -EINVAL;
+			if (!samsung->debug_dcphy_enable || !samsung->debug_dcphy_ignore_lane_ready)
+				return -EINVAL;
+			dev_warn(samsung->dev, "debug dcphy ignoring data lane 1 ready timeout\n");
 		}
 	}
 	if (sensor->lanes > 0x02) {
@@ -2243,7 +2647,9 @@ static int samsung_dcphy_rx_lane_enable(struct csi2_dphy *dphy,
 				       sts, (sts & PHY_READY), 200, 2000);
 		if (ret < 0) {
 			dev_err(samsung->dev, "phy rx data lane 2 is not locked\n");
-			return -EINVAL;
+			if (!samsung->debug_dcphy_enable || !samsung->debug_dcphy_ignore_lane_ready)
+				return -EINVAL;
+			dev_warn(samsung->dev, "debug dcphy ignoring data lane 2 ready timeout\n");
 		}
 	}
 
@@ -2252,7 +2658,9 @@ static int samsung_dcphy_rx_lane_enable(struct csi2_dphy *dphy,
 				       sts, (sts & PHY_READY), 200, 2000);
 		if (ret < 0) {
 			dev_err(samsung->dev, "phy rx data lane 3 is not locked\n");
-			return -EINVAL;
+			if (!samsung->debug_dcphy_enable || !samsung->debug_dcphy_ignore_lane_ready)
+				return -EINVAL;
+			dev_warn(samsung->dev, "debug dcphy ignoring data lane 3 ready timeout\n");
 		}
 	}
 	return 0;
@@ -2283,11 +2691,16 @@ static int samsung_dcphy_rx_stream_on(struct csi2_dphy *dphy,
 	if (samsung->s_phy_rst)
 		reset_control_assert(samsung->s_phy_rst);
 
+	samsung->debug_dcphy_last_data_rate_mbps = dphy->data_rate_mbps;
+	samsung->debug_dcphy_last_param = dphy->dphy_param;
 	samsung_mipi_dcphy_bias_block_enable(samsung, dphy);
 	ret = samsung_dcphy_rx_config_common(dphy, sensor);
 	if (ret)
 		goto out_streamon;
 	samsung_dcphy_rx_config_settle(dphy, sensor);
+	ret = samsung_dcphy_debug_apply_program(samsung);
+	if (ret)
+		goto out_streamon;
 
 	ret = samsung_dcphy_rx_lane_enable(dphy, sensor);
 	if (ret)
@@ -2297,10 +2710,13 @@ static int samsung_dcphy_rx_stream_on(struct csi2_dphy *dphy,
 		reset_control_deassert(samsung->s_phy_rst);
 
 	atomic_inc(&samsung->stream_cnt);
+	samsung->debug_dcphy_stream_on_count++;
+	samsung->debug_dcphy_last_stream_ret = 0;
 	mutex_unlock(&samsung->mutex);
 
 	return 0;
 out_streamon:
+	samsung->debug_dcphy_last_stream_ret = ret;
 	if (samsung->s_phy_rst)
 		reset_control_deassert(samsung->s_phy_rst);
 	mutex_unlock(&samsung->mutex);
@@ -2402,6 +2818,8 @@ static int samsung_mipi_dcphy_probe(struct platform_device *pdev)
 
 	samsung->dev = dev;
 	samsung->pdata = device_get_match_data(dev);
+	samsung->debug_dcphy_clk_settle = 0x301;
+	samsung->debug_dcphy_sot_sync = 0x03;
 	platform_set_drvdata(pdev, samsung);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -2479,6 +2897,16 @@ static int samsung_mipi_dcphy_probe(struct platform_device *pdev)
 	mutex_init(&samsung->mutex);
 	pm_runtime_enable(dev);
 
+	ret = sysfs_create_group(&dev->kobj, &samsung_dcphy_debug_attr_group);
+	if (ret) {
+		dev_err(dev, "failed to create samsung dcphy debug sysfs group: %d\n", ret);
+		pm_runtime_disable(dev);
+		mutex_destroy(&samsung->mutex);
+		return ret;
+	}
+	samsung->debug_dcphy_sysfs_created = true;
+	dev_info(dev, "fullcontrol samsung dcphy debug sysfs enabled\n");
+
 	return 0;
 }
 
@@ -2486,6 +2914,8 @@ static int samsung_mipi_dcphy_remove(struct platform_device *pdev)
 {
 	struct samsung_mipi_dcphy *samsung = platform_get_drvdata(pdev);
 
+	if (samsung->debug_dcphy_sysfs_created)
+		sysfs_remove_group(&samsung->dev->kobj, &samsung_dcphy_debug_attr_group);
 	pm_runtime_disable(samsung->dev);
 	mutex_destroy(&samsung->mutex);
 

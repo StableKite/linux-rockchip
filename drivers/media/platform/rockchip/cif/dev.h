@@ -1047,6 +1047,11 @@ struct rkcif_device {
 	struct delayed_work		work_flip;
 	void				*sw_reg;
 	int				reg_dbg;
+	/* full-userspace debug surface; inert until debug_cif_enable=1 */
+	bool				debug_cif_enable;
+	u32				debug_cif_reg_addr;
+	u32				debug_cif_reg_last;
+	u32				debug_cif_reg_ops;
 	struct rkcif_csi_info		csi_info;
 	u32				pre_buf_num;
 	u32				pre_buf_addr[MAX_PRE_BUF_NUM];
