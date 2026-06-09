@@ -37,7 +37,7 @@
 		volumeup-key {
 			linux,code = <KEY_VOLUMEUP>;
 			label = "volume up";
-			press-threshold-microvolt = <1750>;
+			press-threshold-microvolt = <1750000>;
 		};
 	};
 
@@ -205,7 +205,7 @@
 		compatible = "pwm-fan";
 		#cooling-cells = <2>;
 		pwms = <&pwm2 0 50000 0>;
-		cooling-levels = <0 50 100 150 200 255>;
+		cooling-levels = <25 45 60 75 100 130 170 210 255>;
 		// cooling-levels = <0 255>;
 
         interrupt-parent = <&gpio3>;
@@ -219,12 +219,15 @@
 		// >;
 
 		rockchip,temp-trips = <
-			40000   1
-			45000   2
-			50000   3
-			55000   4
-			60000   5
-		>;
+			38000	1
+			44000	2
+			50000	3
+			56000	4
+			62000	5
+			68000	6
+			74000	7
+			80000	8
+        >;
  
 		status = "okay";
 	};
@@ -378,7 +381,7 @@
 
 
 &sdio {
-	max-frequency = <150000000>;
+	max-frequency = <100000000>;
 	supports-sdio;
 	bus-width = <4>;
 	disable-wp;
@@ -890,6 +893,11 @@
 /* phy1 - right ethernet port PCIE20_1_TXP */
 &pcie2x1l0 {
 	reset-gpios = <&gpio4 RK_PA5 GPIO_ACTIVE_HIGH>;
+	/* r8125 Ethernet LED configuration:
+	 * LED0 (yellow): blink on traffic at all link speeds
+	 * LED3 (green): solid on at all link speeds
+	 */
+	realtek,led-data = <0x18 0x022B 0x96 0x002B>;
 	vpcie3v3-supply = <&vcc5v0_usb_eth>;
 	status = "okay";
 };
@@ -904,6 +912,11 @@
 /* phy0 - left ethernet port PCIE20_0_TXP */
 &pcie2x1l2 {
 	reset-gpios = <&gpio3 RK_PD0 GPIO_ACTIVE_HIGH>;
+	/* r8125 Ethernet LED configuration:
+	 * LED0 (yellow): blink on traffic at all link speeds
+	 * LED3 (green): solid on at all link speeds
+	 */
+	realtek,led-data = <0x18 0x022B 0x96 0x002B>;
 	vpcie3v3-supply = <&vcc5v0_usb_eth>;
 	status = "okay";
 };
