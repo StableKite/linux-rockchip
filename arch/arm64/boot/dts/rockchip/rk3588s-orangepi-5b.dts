@@ -10,7 +10,7 @@
 
 / {
 	model = "Orange Pi 5B";
-	compatible = "rockchip,rk3588s-orangepi-5", "rockchip,rk3588";
+	compatible = "rockchip,rk3588s-orangepi-5b", "rockchip,rk3588s-orangepi-5", "rockchip,rk3588";
 };
 
 &sdhci {
@@ -27,4 +27,23 @@
 
 &wireless_wlan {
 	status = "okay";
+};
+
+
+/*
+ * Current OPi5B raw SD/eMMC boot chain does not provide a valid OP-TEE BL32.
+ * Keep BL31/bootloader policy separate, but do not let Linux probe a stale
+ * OP-TEE firmware node from rk3588-linux.dtsi.
+ */
+&optee {
+	status = "disabled";
+};
+
+
+/*
+ * fe190000 PCIe host reports invalid resources on OPi5B in current DT.
+ * Keep the AP6275P Wi-Fi PCIe path enabled; disable only this broken host.
+ */
+&pcie2x1l2 {
+	status = "disabled";
 };

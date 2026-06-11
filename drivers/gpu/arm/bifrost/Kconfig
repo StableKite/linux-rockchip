@@ -381,6 +381,10 @@ config MALI_ARBITRATION
 	  If unsure, say N.
 
 config MALI_TRACE_POWER_GPU_WORK_PERIOD
+	depends on BROKEN
+	# StableKiteOS: disabled on RK3588 g25p0/g24p0 because current
+	# CSF firmware does not expose the gpu_metrics trace buffer and
+	# the vendor driver otherwise fails GPU firmware initialization.
 	bool "Enable per-application GPU metrics tracepoints"
 	depends on MALI_BIFROST
 	default y
