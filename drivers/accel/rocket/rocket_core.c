@@ -18,7 +18,6 @@ int rocket_core_init(struct rocket_core *core)
 {
 	struct device *dev = core->dev;
 	struct platform_device *pdev = to_platform_device(dev);
-	u32 version;
 	int err = 0;
 
 	core->resets[0].id = "srst_a";
@@ -77,19 +76,16 @@ int rocket_core_init(struct rocket_core *core)
 
 	pm_runtime_enable(dev);
 
-	err = pm_runtime_resume_and_get(dev);
-	if (err) {
-		rocket_core_fini(core);
-		return err;
-	}
-
-	version = rocket_pc_readl(core, VERSION);
-	version += rocket_pc_readl(core, VERSION_NUM) & 0xffff;
-
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_put_autosuspend(dev);
-
-	dev_info(dev, "Rockchip NPU core %d version: %d\n", core->index, version);
+	/*
+	 * Do not force a runtime resume during probe.
+	 *
+	 * On RK3588 with the vendor 6.1 PREEMPT_RT kernel this early
+	 * resume path can stall in the Rockchip IOMMU/clock runtime-PM
+	 * chain before userspace starts.  Keep runtime PM enabled and let
+	 * the first real job submission perform pm_runtime_get_sync().
+	 */
+	dev_info(dev, "Rockchip NPU core %d: deferring probe-time hardware resume\n",
+		 core->index);
 
 	return 0;
 }
