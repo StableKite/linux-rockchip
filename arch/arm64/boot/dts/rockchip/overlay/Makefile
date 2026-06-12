@@ -136,8 +136,6 @@ dtbo-$(CONFIG_ARCH_ROCKCHIP) += \
 	rockchip-rk3588-dmc-oc-3500mhz.dtbo \
 	rockchip-rk3588-opp-oc-24ghz.dtbo \
 	rockchip-rk3588-panthor-gpu.dtbo \
-	rk3588-rocket.dtbo \
-        rk3588-rocket-opi5-supplies.dtbo \
 	rk3528-rock-2-enable-pcie.dtbo \
 	rk3566-roc-pc-sata2.dtbo \
 	rk3576-can1-m1.dtbo \
@@ -368,3 +366,4 @@ targets += $(dtbo-y) $(dtbotxt-y)
 
 always-y		:= $(dtbo-y) $(dtbotxt-y)
 clean-files		:= *.dtbo
+dtbo-$(CONFIG_ARCH_ROCKCHIP) += rk3588-rocket.dtbo
