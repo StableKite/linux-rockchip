@@ -366,4 +366,4 @@ targets += $(dtbo-y) $(dtbotxt-y)
 
 always-y		:= $(dtbo-y) $(dtbotxt-y)
 clean-files		:= *.dtbo
-dtbo-$(CONFIG_ARCH_ROCKCHIP) += rk3588-rocket.dtbo
+dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-rocket.dtbo
