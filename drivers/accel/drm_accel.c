@@ -91,6 +91,23 @@ void accel_debugfs_register(struct drm_device *dev)
  * the device's minor number. In addition, it sets the class and type of the
  * device instance to the accel sysfs class and device type, respectively.
  */
+
+static struct drm_minor *accel_minor_acquire(unsigned int minor_id)
+{
+	struct drm_minor *minor;
+
+	xa_lock(&accel_minors_xa);
+	minor = xa_load(&accel_minors_xa, minor_id);
+	if (minor)
+		drm_dev_get(minor->dev);
+	xa_unlock(&accel_minors_xa);
+
+	if (!minor)
+		return ERR_PTR(-ENODEV);
+
+	return minor;
+}
+
 void accel_set_device_instance_params(struct device *kdev, int index)
 {
 	kdev->devt = MKDEV(ACCEL_MAJOR, index);
@@ -115,7 +132,7 @@ int accel_open(struct inode *inode, struct file *filp)
 	struct drm_minor *minor;
 	int retcode;
 
-	minor = drm_minor_acquire(iminor(inode));
+	minor = accel_minor_acquire(iminor(inode));
 	if (IS_ERR(minor))
 		return PTR_ERR(minor);
 
@@ -145,7 +162,7 @@ static int accel_stub_open(struct inode *inode, struct file *filp)
 	struct drm_minor *minor;
 	int err;
 
-	minor = drm_minor_acquire(iminor(inode));
+	minor = accel_minor_acquire(iminor(inode));
 	if (IS_ERR(minor))
 		return PTR_ERR(minor);
 

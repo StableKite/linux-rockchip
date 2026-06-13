@@ -131,7 +131,7 @@ static int drm_minor_alloc(struct drm_device *dev, unsigned int type)
 	minor->dev = dev;
 
 	if (type == DRM_MINOR_ACCEL) {
-		r = xa_alloc(&accel_minors_xa, &minor->index, NULL,
+		r = xa_alloc(&accel_minors_xa, &minor->index, minor,
 			     XA_LIMIT(0, ACCEL_MAX_MINORS - 1), GFP_KERNEL);
 		if (r < 0)
 			return r;
