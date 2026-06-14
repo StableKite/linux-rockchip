@@ -471,7 +471,9 @@ struct device *drm_sysfs_minor_alloc(struct drm_minor *minor)
 	struct device *kdev;
 	int r;
 
-	if (minor->type == DRM_MINOR_RENDER)
+	if (minor->type == DRM_MINOR_ACCEL)
+		minor_str = "accel%d";
+	else if (minor->type == DRM_MINOR_RENDER)
 		minor_str = "renderD%d";
 	else
 		minor_str = "card%d";
