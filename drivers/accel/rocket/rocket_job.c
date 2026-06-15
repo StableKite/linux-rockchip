@@ -310,18 +310,38 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
 		dma_fence_put(job->done_fence);
 	job->done_fence = dma_fence_get(fence);
 
+	dev_err(core->dev,
+		"ROCKETDBG run_job enter core=%d job=%p task=%u/%u fence=%p\\n",
+		core->index, job, job->next_task_idx, job->task_count, fence);
+
+	dev_err(core->dev, "ROCKETDBG before pm_runtime_get_sync core=%d\\n",
+		core->index);
 	ret = pm_runtime_get_sync(core->dev);
+	dev_err(core->dev, "ROCKETDBG after pm_runtime_get_sync core=%d ret=%d\\n",
+		core->index, ret);
 	if (ret < 0)
 		return fence;
 
+	dev_err(core->dev, "ROCKETDBG before iommu_attach_group core=%d domain=%p group=%p\\n",
+		core->index, job->domain->domain, core->iommu_group);
 	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
+	dev_err(core->dev, "ROCKETDBG after iommu_attach_group core=%d ret=%d\\n",
+		core->index, ret);
 	if (ret < 0)
 		return fence;
 
+	dev_err(core->dev, "ROCKETDBG before job_lock core=%d\\n", core->index);
 	scoped_guard(mutex, &core->job_lock) {
+		dev_err(core->dev, "ROCKETDBG inside job_lock before hw_submit core=%d\\n",
+			core->index);
 		core->in_flight_job = job;
 		rocket_job_hw_submit(core, job);
+		dev_err(core->dev, "ROCKETDBG inside job_lock after hw_submit core=%d\\n",
+			core->index);
 	}
+
+	dev_err(core->dev, "ROCKETDBG run_job return core=%d fence=%p\\n",
+		core->index, fence);
 
 	return fence;
 }
