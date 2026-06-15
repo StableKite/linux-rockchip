@@ -156,6 +156,7 @@ static const struct drm_driver rocket_drm_driver = {
 	.num_ioctls		= ARRAY_SIZE(rocket_drm_driver_ioctls),
 	.fops			= &rocket_accel_driver_fops,
 	.name			= "rocket",
+	.date			= "20250615",
 	.desc			= "rocket DRM",
 };
 
