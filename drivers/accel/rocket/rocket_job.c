@@ -94,6 +94,11 @@ rocket_copy_tasks(struct drm_device *dev,
 			goto fail;
 		}
 
+		if (!task.regcmd_count) {
+			ret = -EINVAL;
+			goto fail;
+		}
+
 		rjob->tasks[i].regcmd = task.regcmd;
 		rjob->tasks[i].regcmd_count = task.regcmd_count;
 	}
@@ -102,6 +107,7 @@ rocket_copy_tasks(struct drm_device *dev,
 
 fail:
 	kvfree(rjob->tasks);
+	rjob->tasks = NULL;
 	return ret;
 }
 
@@ -109,48 +115,143 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
 {
 	struct rocket_task *task;
 	unsigned int extra_bit;
+	u32 amount;
+
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit enter core=%d job=%p next=%u/%u reset=%d\n",
+		  core->index, job, job->next_task_idx, job->task_count,
+		  atomic_read(&core->reset.pending));
 
 	/* Don't queue the job if a reset is in progress */
-	if (atomic_read(&core->reset.pending))
+	if (atomic_read(&core->reset.pending)) {
+		dev_emerg(core->dev,
+			  "ROCKETDBG hw_submit reset pending return core=%d\n",
+			  core->index);
 		return;
+	}
+
+	if (WARN_ON_ONCE(job->next_task_idx >= job->task_count)) {
+		dev_emerg(core->dev,
+			  "ROCKETDBG hw_submit invalid task index core=%d next=%u count=%u\n",
+			  core->index, job->next_task_idx, job->task_count);
+		return;
+	}
 
 	/* GO ! */
-
 	task = &job->tasks[job->next_task_idx];
 	job->next_task_idx++;
 
+	amount = PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT((task->regcmd_count + 1) / 2 - 1);
+
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit task core=%d regcmd=0x%llx regcmd_count=%u amount=0x%x\n",
+		  core->index, (unsigned long long)task->regcmd,
+		  task->regcmd_count, amount);
+
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc BASE_ADDRESS prime core=%d\n",
+		  core->index);
 	rocket_pc_writel(core, BASE_ADDRESS, 0x1);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc BASE_ADDRESS prime core=%d\n",
+		  core->index);
 
-	 /* From rknpu, in the TRM this bit is marked as reserved */
+	/* From rknpu, in the TRM this bit is marked as reserved */
 	extra_bit = 0x10000000 * core->index;
-	rocket_cna_writel(core, S_POINTER, CNA_S_POINTER_POINTER_PP_EN(1) |
-					   CNA_S_POINTER_EXECUTER_PP_EN(1) |
-					   CNA_S_POINTER_POINTER_PP_MODE(1) |
-					   extra_bit);
 
-	rocket_core_writel(core, S_POINTER, CORE_S_POINTER_POINTER_PP_EN(1) |
-					    CORE_S_POINTER_EXECUTER_PP_EN(1) |
-					    CORE_S_POINTER_POINTER_PP_MODE(1) |
-					    extra_bit);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before cna S_POINTER core=%d extra_bit=0x%x\n",
+		  core->index, extra_bit);
+	rocket_cna_writel(core, S_POINTER,
+			  CNA_S_POINTER_POINTER_PP_EN(1) |
+			  CNA_S_POINTER_EXECUTER_PP_EN(1) |
+			  CNA_S_POINTER_POINTER_PP_MODE(1) |
+			  extra_bit);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after cna S_POINTER core=%d\n",
+		  core->index);
 
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before core S_POINTER core=%d\n",
+		  core->index);
+	rocket_core_writel(core, S_POINTER,
+			   CORE_S_POINTER_POINTER_PP_EN(1) |
+			   CORE_S_POINTER_EXECUTER_PP_EN(1) |
+			   CORE_S_POINTER_POINTER_PP_MODE(1) |
+			   extra_bit);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after core S_POINTER core=%d\n",
+		  core->index);
+
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc BASE_ADDRESS regcmd core=%d\n",
+		  core->index);
 	rocket_pc_writel(core, BASE_ADDRESS, task->regcmd);
-	rocket_pc_writel(core, REGISTER_AMOUNTS,
-			 PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT((task->regcmd_count + 1) / 2 - 1));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc BASE_ADDRESS regcmd core=%d\n",
+		  core->index);
 
-	rocket_pc_writel(core, INTERRUPT_MASK, PC_INTERRUPT_MASK_DPU_0 | PC_INTERRUPT_MASK_DPU_1);
-	rocket_pc_writel(core, INTERRUPT_CLEAR, PC_INTERRUPT_CLEAR_DPU_0 | PC_INTERRUPT_CLEAR_DPU_1);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc REGISTER_AMOUNTS core=%d\n",
+		  core->index);
+	rocket_pc_writel(core, REGISTER_AMOUNTS, amount);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc REGISTER_AMOUNTS core=%d\n",
+		  core->index);
 
-	rocket_pc_writel(core, TASK_CON, PC_TASK_CON_RESERVED_0(1) |
-					 PC_TASK_CON_TASK_COUNT_CLEAR(1) |
-					 PC_TASK_CON_TASK_NUMBER(1) |
-					 PC_TASK_CON_TASK_PP_EN(1));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc INTERRUPT_MASK core=%d\n",
+		  core->index);
+	rocket_pc_writel(core, INTERRUPT_MASK,
+			  PC_INTERRUPT_MASK_DPU_0 |
+			  PC_INTERRUPT_MASK_DPU_1);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc INTERRUPT_MASK core=%d\n",
+		  core->index);
 
-	rocket_pc_writel(core, TASK_DMA_BASE_ADDR, PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc INTERRUPT_CLEAR core=%d\n",
+		  core->index);
+	rocket_pc_writel(core, INTERRUPT_CLEAR,
+			  PC_INTERRUPT_CLEAR_DPU_0 |
+			  PC_INTERRUPT_CLEAR_DPU_1);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc INTERRUPT_CLEAR core=%d\n",
+		  core->index);
 
-	rocket_pc_writel(core, OPERATION_ENABLE, PC_OPERATION_ENABLE_OP_EN(1));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc TASK_CON core=%d\n",
+		  core->index);
+	rocket_pc_writel(core, TASK_CON,
+			  PC_TASK_CON_RESERVED_0(1) |
+			  PC_TASK_CON_TASK_COUNT_CLEAR(1) |
+			  PC_TASK_CON_TASK_NUMBER(1) |
+			  PC_TASK_CON_TASK_PP_EN(1));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc TASK_CON core=%d\n",
+		  core->index);
 
-	dev_dbg(core->dev, "Submitted regcmd at 0x%llx to core %d", task->regcmd, core->index);
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc TASK_DMA_BASE_ADDR core=%d\n",
+		  core->index);
+	rocket_pc_writel(core, TASK_DMA_BASE_ADDR,
+			  PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc TASK_DMA_BASE_ADDR core=%d\n",
+		  core->index);
+
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit before pc OPERATION_ENABLE core=%d\n",
+		  core->index);
+	rocket_pc_writel(core, OPERATION_ENABLE,
+			  PC_OPERATION_ENABLE_OP_EN(1));
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after pc OPERATION_ENABLE core=%d\n",
+		  core->index);
+
+	dev_emerg(core->dev, "ROCKETDBG hw_submit done core=%d\n", core->index);
 }
+
 
 static int rocket_acquire_object_fences(struct drm_gem_object **bos,
 					int bo_count,
@@ -233,7 +334,8 @@ static void rocket_job_cleanup(struct kref *ref)
 						refcount);
 	unsigned int i;
 
-	rocket_iommu_domain_put(job->domain);
+	if (job->domain)
+		rocket_iommu_domain_put(job->domain);
 
 	dma_fence_put(job->done_fence);
 	dma_fence_put(job->inference_done_fence);
@@ -360,7 +462,7 @@ static void rocket_job_handle_irq(struct rocket_core *core)
 				return;
 			}
 
-			iommu_detach_group(NULL, iommu_group_get(core->dev));
+			iommu_detach_group(NULL, core->iommu_group);
 			dma_fence_signal(core->in_flight_job->done_fence);
 			pm_runtime_put_autosuspend(core->dev);
 			core->in_flight_job = NULL;
@@ -646,8 +748,11 @@ int rocket_ioctl_submit(struct drm_device *dev, void *data, struct drm_file *fil
 	}
 
 
-	for (i = 0; i < args->job_count; i++)
-		rocket_ioctl_submit_job(dev, file, &jobs[i]);
+	for (i = 0; i < args->job_count; i++) {
+		ret = rocket_ioctl_submit_job(dev, file, &jobs[i]);
+		if (ret)
+			goto exit;
+	}
 
 exit:
 	kvfree(jobs);
