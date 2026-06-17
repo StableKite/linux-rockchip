@@ -151,9 +151,12 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
 	dev_emerg(core->dev,
 		  "ROCKETDBG hw_submit before pc BASE_ADDRESS prime core=%d\n",
 		  core->index);
-	rocket_pc_writel(core, BASE_ADDRESS, 0x1);
 	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc BASE_ADDRESS prime core=%d\n",
+		  "ROCKETDBG hw_submit SKIP actual pc BASE_ADDRESS prime write core=%d\n",
+		  core->index);
+	/* DEBUG: skipped hard-hanging rocket_pc_writel(core, BASE_ADDRESS, 0x1); */
+	dev_emerg(core->dev,
+		  "ROCKETDBG hw_submit after skipped pc BASE_ADDRESS prime core=%d\n",
 		  core->index);
 
 	/* From rknpu, in the TRM this bit is marked as reserved */
