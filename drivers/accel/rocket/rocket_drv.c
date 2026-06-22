@@ -14,6 +14,9 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/reset.h>
+#include <linux/regulator/consumer.h>
+#include <linux/delay.h>
 
 #include "rocket_device.h"
 #include "rocket_drv.h"
@@ -238,37 +241,91 @@ static int find_core_for_dev(struct device *dev)
 
 static int rocket_device_runtime_resume(struct device *dev)
 {
-	struct rocket_device *rdev = dev_get_drvdata(dev);
-	int core = find_core_for_dev(dev);
-	int err = 0;
+struct rocket_device *rdev = dev_get_drvdata(dev);
+int core = find_core_for_dev(dev);
+int err;
 
-	if (core < 0)
-		return -ENODEV;
+if (core < 0)
+return core;
 
-	err = clk_bulk_prepare_enable(ARRAY_SIZE(rdev->cores[core].clks), rdev->cores[core].clks);
-	if (err) {
-		dev_err(dev, "failed to enable (%d) clocks for core %d\n", err, core);
-		return err;
-	}
-
-	return 0;
+if (rdev->cores[core].npu_supply) {
+err = regulator_enable(rdev->cores[core].npu_supply);
+if (err)
+return err;
 }
+
+if (rdev->cores[core].sram_supply) {
+err = regulator_enable(rdev->cores[core].sram_supply);
+if (err)
+goto err_disable_npu;
+}
+
+usleep_range(2000, 3000);
+
+err = reset_control_bulk_assert(ARRAY_SIZE(rdev->cores[core].resets),
+rdev->cores[core].resets);
+if (err)
+goto err_disable_sram;
+
+usleep_range(2000, 3000);
+
+err = clk_bulk_prepare_enable(rdev->cores[core].num_clks,
+      rdev->cores[core].clks);
+if (err)
+goto err_disable_sram;
+
+usleep_range(2000, 3000);
+
+err = reset_control_bulk_deassert(ARRAY_SIZE(rdev->cores[core].resets),
+  rdev->cores[core].resets);
+if (err)
+goto err_disable_clk;
+
+usleep_range(10000, 12000);
+
+return 0;
+
+err_disable_clk:
+clk_bulk_disable_unprepare(rdev->cores[core].num_clks,
+   rdev->cores[core].clks);
+err_disable_sram:
+if (rdev->cores[core].sram_supply)
+regulator_disable(rdev->cores[core].sram_supply);
+err_disable_npu:
+if (rdev->cores[core].npu_supply)
+regulator_disable(rdev->cores[core].npu_supply);
+
+return err;
+}
+
 
 static int rocket_device_runtime_suspend(struct device *dev)
 {
-	struct rocket_device *rdev = dev_get_drvdata(dev);
-	int core = find_core_for_dev(dev);
+struct rocket_device *rdev = dev_get_drvdata(dev);
+int core = find_core_for_dev(dev);
 
-	if (core < 0)
-		return -ENODEV;
+if (core < 0)
+return core;
 
-	if (!rocket_job_is_idle(&rdev->cores[core]))
-		return -EBUSY;
+if (!rocket_job_is_idle(&rdev->cores[core]))
+return -EBUSY;
 
-	clk_bulk_disable_unprepare(ARRAY_SIZE(rdev->cores[core].clks), rdev->cores[core].clks);
+/*
+ * Do not assert NPU resets here. On RK3588 this breaks the next
+ * rk_iommu raw reset/resume path. The reset pulse is done on resume.
+ */
+clk_bulk_disable_unprepare(rdev->cores[core].num_clks,
+   rdev->cores[core].clks);
 
-	return 0;
+if (rdev->cores[core].sram_supply)
+regulator_disable(rdev->cores[core].sram_supply);
+
+if (rdev->cores[core].npu_supply)
+regulator_disable(rdev->cores[core].npu_supply);
+
+return 0;
 }
+
 
 EXPORT_GPL_DEV_PM_OPS(rocket_pm_ops) = {
 	RUNTIME_PM_OPS(rocket_device_runtime_suspend, rocket_device_runtime_resume, NULL)

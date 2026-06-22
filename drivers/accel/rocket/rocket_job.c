@@ -116,143 +116,89 @@ static void rocket_job_hw_submit(struct rocket_core *core, struct rocket_job *jo
 	struct rocket_task *task;
 	unsigned int extra_bit;
 	u32 amount;
+	u32 r55_task_number = 1;
+	unsigned int r55_start_task_idx = 0;
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit enter core=%d job=%p next=%u/%u reset=%d\n",
-		  core->index, job, job->next_task_idx, job->task_count,
-		  atomic_read(&core->reset.pending));
 
 	/* Don't queue the job if a reset is in progress */
 	if (atomic_read(&core->reset.pending)) {
-		dev_emerg(core->dev,
-			  "ROCKETDBG hw_submit reset pending return core=%d\n",
-			  core->index);
 		return;
 	}
 
 	if (WARN_ON_ONCE(job->next_task_idx >= job->task_count)) {
-		dev_emerg(core->dev,
-			  "ROCKETDBG hw_submit invalid task index core=%d next=%u count=%u\n",
-			  core->index, job->next_task_idx, job->task_count);
 		return;
 	}
 
 	/* GO ! */
-	task = &job->tasks[job->next_task_idx];
-	job->next_task_idx++;
+	r55_start_task_idx = job->next_task_idx;
+	task = &job->tasks[r55_start_task_idx];
+
+	/*
+	 * R55_PC_TASK_NUMBER_FROM_JOB:
+	 * For a multi-task Rocket job, let PC execute the whole task chain
+	 * using TASK_NUMBER=job->task_count instead of restarting PC once per
+	 * split task.  Keep single-task jobs unchanged.
+	 */
+	if (r55_start_task_idx == 0 && job->task_count > 1) {
+		r55_task_number = job->task_count;
+		if (r55_task_number > 0xfff)
+			r55_task_number = 0xfff;
+		job->next_task_idx = job->task_count;
+	} else {
+		r55_task_number = 1;
+		job->next_task_idx++;
+	}
 
 	amount = PC_REGISTER_AMOUNTS_PC_DATA_AMOUNT((task->regcmd_count + 1) / 2 - 1);
 
 	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit task core=%d regcmd=0x%llx regcmd_count=%u amount=0x%x\n",
-		  core->index, (unsigned long long)task->regcmd,
+		  "R55_PC_TASK_NUMBER_FROM_JOB core=%d start=%u total=%u pc_tasks=%u first_regcmd=0x%llx first_count=%u amount=0x%x\\n",
+		  core->index, r55_start_task_idx, job->task_count,
+		  r55_task_number, (unsigned long long)task->regcmd,
 		  task->regcmd_count, amount);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc BASE_ADDRESS prime core=%d\n",
-		  core->index);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit SKIP actual pc BASE_ADDRESS prime write core=%d\n",
-		  core->index);
-	/* DEBUG: skipped hard-hanging rocket_pc_writel(core, BASE_ADDRESS, 0x1); */
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after skipped pc BASE_ADDRESS prime core=%d\n",
-		  core->index);
+
+	rocket_pc_writel(core, BASE_ADDRESS, 0x1);
 
 	/* From rknpu, in the TRM this bit is marked as reserved */
 	extra_bit = 0x10000000 * core->index;
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before cna S_POINTER core=%d extra_bit=0x%x\n",
-		  core->index, extra_bit);
 	rocket_cna_writel(core, S_POINTER,
 			  CNA_S_POINTER_POINTER_PP_EN(1) |
 			  CNA_S_POINTER_EXECUTER_PP_EN(1) |
 			  CNA_S_POINTER_POINTER_PP_MODE(1) |
 			  extra_bit);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after cna S_POINTER core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before core S_POINTER core=%d\n",
-		  core->index);
 	rocket_core_writel(core, S_POINTER,
 			   CORE_S_POINTER_POINTER_PP_EN(1) |
 			   CORE_S_POINTER_EXECUTER_PP_EN(1) |
 			   CORE_S_POINTER_POINTER_PP_MODE(1) |
 			   extra_bit);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after core S_POINTER core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc BASE_ADDRESS regcmd core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, BASE_ADDRESS, task->regcmd);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc BASE_ADDRESS regcmd core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc REGISTER_AMOUNTS core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, REGISTER_AMOUNTS, amount);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc REGISTER_AMOUNTS core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc INTERRUPT_MASK core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, INTERRUPT_MASK,
 			  PC_INTERRUPT_MASK_DPU_0 |
 			  PC_INTERRUPT_MASK_DPU_1);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc INTERRUPT_MASK core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc INTERRUPT_CLEAR core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, INTERRUPT_CLEAR,
 			  PC_INTERRUPT_CLEAR_DPU_0 |
 			  PC_INTERRUPT_CLEAR_DPU_1);
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc INTERRUPT_CLEAR core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc TASK_CON core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, TASK_CON,
 			  PC_TASK_CON_RESERVED_0(1) |
 			  PC_TASK_CON_TASK_COUNT_CLEAR(1) |
-			  PC_TASK_CON_TASK_NUMBER(1) |
+			  PC_TASK_CON_TASK_NUMBER(r55_task_number) |
 			  PC_TASK_CON_TASK_PP_EN(1));
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc TASK_CON core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc TASK_DMA_BASE_ADDR core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, TASK_DMA_BASE_ADDR,
 			  PC_TASK_DMA_BASE_ADDR_DMA_BASE_ADDR(0x0));
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc TASK_DMA_BASE_ADDR core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit before pc OPERATION_ENABLE core=%d\n",
-		  core->index);
 	rocket_pc_writel(core, OPERATION_ENABLE,
 			  PC_OPERATION_ENABLE_OP_EN(1));
-	dev_emerg(core->dev,
-		  "ROCKETDBG hw_submit after pc OPERATION_ENABLE core=%d\n",
-		  core->index);
 
-	dev_emerg(core->dev, "ROCKETDBG hw_submit done core=%d\n", core->index);
 }
 
 
@@ -415,38 +361,20 @@ static struct dma_fence *rocket_job_run(struct drm_sched_job *sched_job)
 		dma_fence_put(job->done_fence);
 	job->done_fence = dma_fence_get(fence);
 
-	dev_err(core->dev,
-		"ROCKETDBG run_job enter core=%d job=%p task=%u/%u fence=%p\\n",
-		core->index, job, job->next_task_idx, job->task_count, fence);
 
-	dev_err(core->dev, "ROCKETDBG before pm_runtime_get_sync core=%d\\n",
-		core->index);
 	ret = pm_runtime_get_sync(core->dev);
-	dev_err(core->dev, "ROCKETDBG after pm_runtime_get_sync core=%d ret=%d\\n",
-		core->index, ret);
 	if (ret < 0)
 		return fence;
 
-	dev_err(core->dev, "ROCKETDBG before iommu_attach_group core=%d domain=%p group=%p\\n",
-		core->index, job->domain->domain, core->iommu_group);
 	ret = iommu_attach_group(job->domain->domain, core->iommu_group);
-	dev_err(core->dev, "ROCKETDBG after iommu_attach_group core=%d ret=%d\\n",
-		core->index, ret);
 	if (ret < 0)
 		return fence;
 
-	dev_err(core->dev, "ROCKETDBG before job_lock core=%d\\n", core->index);
 	scoped_guard(mutex, &core->job_lock) {
-		dev_err(core->dev, "ROCKETDBG inside job_lock before hw_submit core=%d\\n",
-			core->index);
 		core->in_flight_job = job;
 		rocket_job_hw_submit(core, job);
-		dev_err(core->dev, "ROCKETDBG inside job_lock after hw_submit core=%d\\n",
-			core->index);
 	}
 
-	dev_err(core->dev, "ROCKETDBG run_job return core=%d fence=%p\\n",
-		core->index, fence);
 
 	return fence;
 }

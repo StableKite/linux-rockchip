@@ -13,6 +13,7 @@
 
 #include "rocket_core.h"
 #include "rocket_job.h"
+#include <linux/regulator/consumer.h>
 
 int rocket_core_init(struct rocket_core *core)
 {
@@ -27,9 +28,29 @@ int rocket_core_init(struct rocket_core *core)
 	if (err)
 		return dev_err_probe(dev, err, "failed to get resets for core %d\n", core->index);
 
-	err = devm_clk_bulk_get(dev, ARRAY_SIZE(core->clks), core->clks);
-	if (err)
-		return dev_err_probe(dev, err, "failed to get clocks for core %d\n", core->index);
+	core->num_clks = devm_clk_bulk_get_all(dev, &core->clks);
+	if (core->num_clks < 0)
+		return dev_err_probe(dev, core->num_clks,
+				     "failed to get clocks for core %d\n",
+				     core->index);
+
+	core->npu_supply = devm_regulator_get_optional(dev, "npu");
+	if (IS_ERR(core->npu_supply)) {
+		if (PTR_ERR(core->npu_supply) == -ENODEV)
+			core->npu_supply = NULL;
+		else
+			return dev_err_probe(dev, PTR_ERR(core->npu_supply),
+					     "failed to get npu regulator\n");
+	}
+
+	core->sram_supply = devm_regulator_get_optional(dev, "sram");
+	if (IS_ERR(core->sram_supply)) {
+		if (PTR_ERR(core->sram_supply) == -ENODEV)
+			core->sram_supply = NULL;
+		else
+			return dev_err_probe(dev, PTR_ERR(core->sram_supply),
+					     "failed to get sram regulator\n");
+	}
 
 	core->pc_iomem = devm_platform_ioremap_resource_byname(pdev, "pc");
 	if (IS_ERR(core->pc_iomem)) {

@@ -54,8 +54,11 @@ struct rocket_core {
 	void __iomem *pc_iomem;
 	void __iomem *cna_iomem;
 	void __iomem *core_iomem;
-	struct clk_bulk_data clks[4];
+	struct clk_bulk_data *clks;
+	int num_clks;
 	struct reset_control_bulk_data resets[2];
+	struct regulator *npu_supply;
+	struct regulator *sram_supply;
 
 	struct iommu_group *iommu_group;
 
