@@ -73,6 +73,8 @@
 		target = <&dsi0>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			rockchip,lane-rate = <1000>;
 
@@ -193,6 +195,8 @@
 		target = <&i2c3>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-names = "default";
 			pinctrl-0 = <&i2c3m2_xfer>;

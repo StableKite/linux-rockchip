@@ -80,6 +80,8 @@
 		target = <&dsi>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			rockchip,lane-rate = <1000>;
 			dsi_panel: panel@0 {
@@ -277,6 +279,8 @@
 	fragment@7 {
 		target = <&i2c0>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			pinctrl-0 = <&i2c0m1_xfer>;
 			status = "okay";
 			gt9xx: gt9xx@14 {

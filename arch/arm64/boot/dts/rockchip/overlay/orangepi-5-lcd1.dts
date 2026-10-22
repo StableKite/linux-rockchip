@@ -57,6 +57,8 @@
 	fragment@1 {
 		target = <&dsi1>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			//rockchip,lane-rate = <1000>;
 			dsi1_panel: panel@0 {
@@ -176,6 +178,8 @@
 	fragment@13 {
 		target = <&i2c2>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 
 			gt9xx_0: touchscreen@14 {

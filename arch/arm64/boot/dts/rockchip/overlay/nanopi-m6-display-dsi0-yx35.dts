@@ -72,6 +72,8 @@
 		target = <&i2c4>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			clock-frequency = <200000>;
         	pinctrl-0 = <&i2c4m3_xfer>;
         	status = "okay";
@@ -123,6 +125,8 @@
 		target = <&dsi0>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
         	dsi0_panel: panel@0 {
         		compatible = "simple-panel-dsi";

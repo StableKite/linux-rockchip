@@ -116,6 +116,8 @@
 		target = <&dsi0>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			reset-delay-ms = <20>;
 			reset-gpios = <&gpio4 RK_PA3 GPIO_ACTIVE_HIGH>;
@@ -762,6 +764,8 @@
 		target = <&i2c6>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-names = "default";
 			pinctrl-0 = <&i2c6m0_xfer>;

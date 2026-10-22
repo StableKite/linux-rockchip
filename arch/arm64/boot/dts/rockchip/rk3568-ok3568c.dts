@@ -813,7 +813,7 @@
         pinctrl-names = "default";
         pinctrl-0 = <&i2c2m1_xfer>;
 
-        vm149c_0: vm149c@0c {
+        vm149c_0: vm149c@c {
                 compatible = "silicon touch,vm149c";
                 status = "okay";
                 reg = <0x0c>;

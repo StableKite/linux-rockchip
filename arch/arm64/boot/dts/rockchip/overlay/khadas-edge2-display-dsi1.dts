@@ -116,6 +116,8 @@
 		target = <&dsi1>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			reset-delay-ms = <20>;
 			reset-gpios = <&gpio4 RK_PA7 GPIO_ACTIVE_HIGH>;
 			pinctrl-names = "default";

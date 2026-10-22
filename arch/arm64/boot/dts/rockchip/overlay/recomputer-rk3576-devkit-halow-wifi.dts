@@ -17,6 +17,8 @@
 	fragment@0 {
 		target = <&spi3>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
             spidev@1 {
                 compatible = "spidev";
                 reg = <1>;

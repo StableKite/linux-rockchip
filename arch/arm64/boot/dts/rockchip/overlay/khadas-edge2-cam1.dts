@@ -135,6 +135,8 @@
 		target = <&i2c3>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-names = "default";
 			pinctrl-0 = <&i2c3m0_xfer>;

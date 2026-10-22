@@ -89,6 +89,8 @@
 		target = <&dsi1>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			rockchip,lane-rate = <1000>;
 

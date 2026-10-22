@@ -57,6 +57,8 @@
 	fragment@1 {
 		target = <&dsi1>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-names = "default";
 			pinctrl-0 = <&mipi_te1>;
@@ -101,6 +103,8 @@
 	fragment@2 {
 		target = <&i2c7>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 
 			gt9xx_0: touchscreen@14 {

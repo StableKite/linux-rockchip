@@ -57,6 +57,8 @@
 	fragment@1 {
 		target = <&dsi0>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			//rockchip,lane-rate = <1000>;
 			dsi0_panel: panel@0 {
@@ -176,6 +178,8 @@
 	fragment@13 {
 		target = <&i2c7>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-names = "default";
 			pinctrl-0 = <&i2c7m0_xfer>;

@@ -21,3 +21,20 @@
 	reset-gpios = <&gpio4 RK_PA6 GPIO_ACTIVE_HIGH>;
 	rockchip,camera-module-stb = <1>;
 };
+
+/* These base-board inputs are replaced by the graph above. */
+&sc450ai {
+	status = "disabled";
+};
+
+&sc450ai_out {
+	/delete-property/ remote-endpoint;
+};
+
+&imx415 {
+	status = "disabled";
+};
+
+&imx415_out {
+	/delete-property/ remote-endpoint;
+};

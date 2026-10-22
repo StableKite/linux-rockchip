@@ -91,6 +91,8 @@
 	fragment@7 {
 		target = <&i2c_cam1>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			camera1_imx219: camera1-imx219@10 {
 				status = "okay";
 				compatible = "sony,imx219";

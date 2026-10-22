@@ -96,6 +96,8 @@
 		target = <&dsi1>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			dsi1_panel: panel@0 {
 				status = "okay";
@@ -301,6 +303,8 @@
 		target = <&i2c6>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 
 			gt9xx: gt9xx@14 {

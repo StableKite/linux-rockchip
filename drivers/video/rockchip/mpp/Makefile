@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 
 MPP_GIT_REVISION := \
-	$(shell git log -1 --no-decorate --date=short \
+	$(shell git -C $(srctree) log -1 --no-decorate --date=short \
 	--pretty=format:"%h author: %<|(30)%an %cd %s" -- $(src) || \
 	echo -n "unknown mpp version for missing VCS info")
 

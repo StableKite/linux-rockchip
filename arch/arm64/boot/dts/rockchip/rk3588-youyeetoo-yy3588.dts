@@ -708,7 +708,7 @@
 	vpcie3v3-supply = <&vcc3v3_pcie_eth>;
 
 	pcie@0,0 {
-		reg = <0x00100000 0 0 0 0>;
+		reg = <0x00300000 0 0 0 0>;
 		#address-cells = <3>;
 		#size-cells = <2>;
 

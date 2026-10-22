@@ -69,13 +69,13 @@
 				data-lanes = <1 2 3 4>;
 			};
 
-			csi_dphy_input9: endpoint@10 {
+			csi_dphy_input9: endpoint@a {
 				reg = <10>;
 				remote-endpoint = <&imx766_out>;
 				data-lanes = <1 2 3 4>;
 			};
 
-			csi_dphy_input10: endpoint@11 {
+			csi_dphy_input10: endpoint@b {
 				reg = <11>;
 				remote-endpoint = <&os12d40_out>;
 				data-lanes = <1 2 3 4>;

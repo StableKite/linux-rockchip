@@ -89,7 +89,7 @@
 				      "srst_csihost_vicap";
 			csihost-idx = <0>;
 			rockchip,csi2 = <&mipi0_csi2_hw>;
-			phys = <&mipi_dcphy0>;
+			phys = <&mipidcphy0>;
 			phy-names = "dcphy";
 		};
 		csi2_dcphy1 {
@@ -106,7 +106,7 @@
 				      "srst_csihost_vicap";
 			csihost-idx = <1>;
 			rockchip,csi2 = <&mipi1_csi2_hw>;
-			phys = <&mipi_dcphy1>;
+			phys = <&mipidcphy1>;
 			phy-names = "dcphy";
 		};
 		csi2_dphy0 {

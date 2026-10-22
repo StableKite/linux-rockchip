@@ -73,6 +73,8 @@
 		target = <&dsi1>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-names = "default";
 
@@ -193,6 +195,8 @@
 		target = <&i2c5>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-0 = <&i2c5m3_xfer>;
 

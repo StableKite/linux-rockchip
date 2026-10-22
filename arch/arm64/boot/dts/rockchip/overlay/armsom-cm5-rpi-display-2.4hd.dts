@@ -13,6 +13,8 @@
 	fragment@0 {
 		target = <&dsi>;
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			dsi_panel: panel@0 {
 				status = "okay";

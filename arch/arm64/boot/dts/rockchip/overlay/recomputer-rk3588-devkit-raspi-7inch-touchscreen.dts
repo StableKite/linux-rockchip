@@ -34,6 +34,8 @@
 		target = <&i2c4>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 			pinctrl-0 = <&i2c4m1_xfer>;
 
@@ -64,6 +66,8 @@
 		target = <&dsi0>;
 
 		__overlay__ {
+			#address-cells = <1>;
+			#size-cells = <0>;
 			status = "okay";
 
 			dsi0_panel: dsi0_panel@0 {

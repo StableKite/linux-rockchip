@@ -163,3 +163,12 @@
 		};
 	};
 };
+
+/* These base-board inputs are replaced by the graph above. */
+&sc450ai {
+	status = "disabled";
+};
+
+&sc450ai_out {
+	/delete-property/ remote-endpoint;
+};
