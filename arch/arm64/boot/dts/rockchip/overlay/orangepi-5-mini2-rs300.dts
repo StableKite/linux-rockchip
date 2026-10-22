@@ -21,6 +21,8 @@
 
 &i2c7 {
 	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
 
 	mini2_640: camera@3c {
 		compatible = "infisense,mini2-640";
@@ -31,7 +33,7 @@
 
 		port {
 			mini2_640_out: endpoint {
-				remote-endpoint = <&mipi_in_ucam0>;
+				remote-endpoint = <&mini2_csi_in>;
 				bus-type = <4>; /* CSI-2 D-PHY */
 				data-lanes = <1 2>;
 				/* Cheng'en confirms 400 Mbps/lane (DDR). */
@@ -42,17 +44,30 @@
 };
 
 /* Camera1's default OV13850 endpoint is disabled in the base board DTS. */
-&mipi_in_ucam0 {
-	remote-endpoint = <&mini2_640_out>;
-	data-lanes = <1 2>;
-};
-
 &csi2_dphy0_hw {
 	status = "okay";
 };
 
 &csi2_dphy0 {
 	status = "okay";
+
+	/* Merge with camera1 ports/port@0/endpoint@0 in the R70 DTB. */
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mini2_csi_in: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&mini2_640_out>;
+				data-lanes = <1 2>;
+			};
+		};
+	};
 };
 
 &mipi2_csi2 {
