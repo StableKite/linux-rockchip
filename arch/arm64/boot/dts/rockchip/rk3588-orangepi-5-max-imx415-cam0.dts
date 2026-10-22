@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/* Orange Pi 5 Max: one four-lane IMX415 on Camera0. */
+#include "rk3588-orangepi-5-max.dts"
+
+/ {
+	model = "Orange Pi 5 Max with IMX415 on Camera0";
+};
+
+&i2c6 {
+	status = "okay";
+
+	imx415_cam0: imx415@1a {
+		compatible = "sony,imx415";
+		reg = <0x1a>;
+		clocks = <&cru CLK_MIPI_CAMARAOUT_M1>;
+		clock-names = "xvclk";
+		assigned-clocks = <&cru CLK_MIPI_CAMARAOUT_M1>;
+		assigned-clock-rates = <37125000>;
+		power-domains = <&power RK3588_PD_VI>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mipim1_camera1_clk>;
+		reset-gpios = <&gpio1 RK_PC4 GPIO_ACTIVE_LOW>;
+		power-gpios = <&gpio1 RK_PD5 GPIO_ACTIVE_LOW>;
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		rockchip,camera-module-name = "IMX415";
+		rockchip,camera-module-lens-name = "default";
+		rockchip,camera-hdr-mode = <0>;
+		status = "okay";
+
+		port {
+			imx415_cam0_out: endpoint {
+				remote-endpoint = <&mipidphy0_in_ucam1>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+	};
+};
+
+/* Replace the disabled OV13855 input; keep the other sensors disabled. */
+&mipidphy0_in_ucam1 {
+	remote-endpoint = <&imx415_cam0_out>;
+	data-lanes = <1 2 3 4>;
+};
+
+&ov13855_out0 {
+	/delete-property/ remote-endpoint;
+};
+
+&csi2_dphy0_hw {
+	status = "okay";
+};
+
+&csi2_dphy0 {
+	status = "okay";
+};
+
+&mipi2_csi2 {
+	status = "okay";
+};
+
+&rkcif_mipi_lvds2 {
+	status = "okay";
+};
+
+&rkcif_mipi_lvds2_sditf {
+	status = "okay";
+};
+
+&rkisp0_vir2 {
+	status = "okay";
+};
