@@ -3399,6 +3399,8 @@ static int imx415_enum_frame_interval(struct v4l2_subdev *sd,
 #define CROP_START(SRC, DST) (((SRC) - (DST)) / 2 / 4 * 4)
 #define DST_WIDTH_3840 3840
 #define DST_HEIGHT_2160 2160
+#define DST_WIDTH_1936 1936
+#define DST_HEIGHT_1096 1096
 #define DST_WIDTH_1920 1920
 #define DST_HEIGHT_1080 1080
 
@@ -3418,7 +3420,13 @@ static int imx415_get_selection(struct v4l2_subdev *sd,
 	struct imx415 *imx415 = to_imx415(sd);
 
 	if (sel->target == V4L2_SEL_TGT_CROP_BOUNDS) {
-		if (imx415->cur_mode->width == 3864) {
+		if (imx415->cur_mode->fullhd_replace_init) {
+			/* Keep the native binned FullFOV mode, aligned for ISP3. */
+			sel->r.left = CROP_START(imx415->cur_mode->width, DST_WIDTH_1936);
+			sel->r.width = DST_WIDTH_1936;
+			sel->r.top = CROP_START(imx415->cur_mode->height, DST_HEIGHT_1096);
+			sel->r.height = DST_HEIGHT_1096;
+		} else if (imx415->cur_mode->width == 3864) {
 			sel->r.left = CROP_START(imx415->cur_mode->width, DST_WIDTH_3840);
 			sel->r.width = DST_WIDTH_3840;
 			sel->r.top = CROP_START(imx415->cur_mode->height, DST_HEIGHT_2160);

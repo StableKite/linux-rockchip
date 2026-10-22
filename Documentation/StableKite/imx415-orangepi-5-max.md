@@ -95,3 +95,15 @@ capture, negotiated mode/fps, CRC/ECC errors, STREAMOFF/restart and ISP output.
 Device numbering may change between connectors; discover `/dev/media*` and
 `/dev/video*` from the media graph. Existing R70 high-speed modes, RKAIQ tuning
 and PREEMPT_RT runtime behavior need separate on-board validation.
+
+## Native FullFOV FHD ISP crop
+
+The native `fullhd_replace_init` mode remains 1944x1097 RAW10 at the sensor.
+Its `CROP_BOUNDS` reports 1936x1096 at (4, 0), matching ISP3 width/height
+alignment while retaining all but eight columns and one row. RKAIQ uses this
+selection when configuring the CIF/ISP pipeline. Other vendor 1944-wide modes
+keep their existing 1920x1080 crop. No sensor timing or mode table is changed.
+
+Run `python3 tools/testing/selftests/media/imx415_native_fhd_crop_test.py`
+for a host-compiled check of the actual selection callback. Physical FOV,
+frame rate and streaming still require validation on the target board.
