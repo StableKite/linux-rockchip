@@ -527,8 +527,7 @@ static int csi2_dphy_update_config(struct v4l2_subdev *sd)
 static int csi2_dphy_s_stream_start(struct v4l2_subdev *sd)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	int i = 0;
-	int ret = 0;
+	int i, ret;
 
 	ret = csi2_dphy_update_sensor_mbus(sd);
 	if (ret < 0)
@@ -536,73 +535,103 @@ static int csi2_dphy_s_stream_start(struct v4l2_subdev *sd)
 
 	for (i = 0; i < dphy->csi_info.csi_num; i++) {
 		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
-			dphy->samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
-			if (dphy->samsung_phy && dphy->samsung_phy->stream_on)
-				dphy->samsung_phy->stream_on(dphy, sd);
+			dphy->samsung_phy = dphy->phy_hw[i];
+			ret = (dphy->samsung_phy && dphy->samsung_phy->stream_on) ?
+				dphy->samsung_phy->stream_on(dphy, sd) : -ENODEV;
 		} else {
-			dphy->dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
-			if (dphy->dphy_hw && dphy->dphy_hw->stream_on)
-				dphy->dphy_hw->stream_on(dphy, sd);
+			dphy->dphy_hw = dphy->phy_hw[i];
+			ret = (dphy->dphy_hw && dphy->dphy_hw->stream_on) ?
+				dphy->dphy_hw->stream_on(dphy, sd) : -ENODEV;
+		}
+		if (ret)
+			goto rollback;
+	}
+	dphy->is_streaming = true;
+	return 0;
+
+rollback:
+	/* Only previous PHYs returned a successful start. A failed current
+	 * PHY has ambiguous state: report failure, never blind-retry it.
+	 */
+	while (--i >= 0) {
+		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
+			dphy->samsung_phy = dphy->phy_hw[i];
+			if (dphy->samsung_phy && dphy->samsung_phy->stream_off)
+				dphy->samsung_phy->stream_off(dphy, sd);
+		} else {
+			dphy->dphy_hw = dphy->phy_hw[i];
+			if (dphy->dphy_hw && dphy->dphy_hw->stream_off)
+				dphy->dphy_hw->stream_off(dphy, sd);
 		}
 	}
-
-	dphy->is_streaming = true;
-
-	return 0;
+	return ret;
 }
 
 static int csi2_dphy_s_stream_stop(struct v4l2_subdev *sd)
 {
 	struct csi2_dphy *dphy = to_csi2_dphy(sd);
-	int i = 0;
+	int i, ret, first_err = 0;
 
 	for (i = 0; i < dphy->csi_info.csi_num; i++) {
 		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
-			dphy->samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
-			if (dphy->samsung_phy && dphy->samsung_phy->stream_off)
-				dphy->samsung_phy->stream_off(dphy, sd);
+			dphy->samsung_phy = dphy->phy_hw[i];
+			ret = (dphy->samsung_phy && dphy->samsung_phy->stream_off) ?
+				dphy->samsung_phy->stream_off(dphy, sd) : -ENODEV;
 		} else {
-			dphy->dphy_hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
-			if (dphy->dphy_hw && dphy->dphy_hw->stream_off)
-				dphy->dphy_hw->stream_off(dphy, sd);
+			dphy->dphy_hw = dphy->phy_hw[i];
+			ret = (dphy->dphy_hw && dphy->dphy_hw->stream_off) ?
+				dphy->dphy_hw->stream_off(dphy, sd) : -ENODEV;
 		}
+		if (ret && !first_err)
+			first_err = ret;
 		if (dphy->drv_data->chip_id != CHIP_ID_RK3568 &&
 		    dphy->drv_data->chip_id != CHIP_ID_RV1106)
 			rockchip_csi2_dphy_detach_hw(dphy, dphy->csi_info.csi_idx[i], i);
 	}
 
+	/* The PHY might be partly stopped; never report clean success.
+	 * Caller owns the error, not an implicit retry of ambiguous MMIO.
+	 */
 	dphy->is_streaming = false;
-
-	dev_info(dphy->dev, "%s stream stop, dphy%d\n",
-		 __func__, dphy->phy_index);
-
-	return 0;
+	if (first_err)
+		dev_err(dphy->dev, "DPHY stream stop partial failure %d\n", first_err);
+	return first_err;
 }
 
 static int csi2_dphy_enable_clk(struct csi2_dphy *dphy)
 {
-	struct csi2_dphy_hw *hw = NULL;
-	struct samsung_mipi_dcphy *samsung_phy = NULL;
-	int ret;
-	int i = 0;
+	struct csi2_dphy_hw *hw;
+	struct samsung_mipi_dcphy *samsung_phy;
+	int ret, i, j;
 
 	for (i = 0; i < dphy->csi_info.csi_num; i++) {
 		if (dphy->csi_info.dphy_vendor[i] == PHY_VENDOR_SAMSUNG) {
-			samsung_phy = (struct samsung_mipi_dcphy *)dphy->phy_hw[i];
-			if (samsung_phy)
-				pm_runtime_get_sync(samsung_phy->dev);
+			samsung_phy = dphy->phy_hw[i];
+			ret = samsung_phy ?
+				pm_runtime_resume_and_get(samsung_phy->dev) : -ENODEV;
 		} else {
-			hw = (struct csi2_dphy_hw *)dphy->phy_hw[i];
-			if (hw) {
-				ret = clk_bulk_prepare_enable(hw->num_clks, hw->clks_bulk);
-				if (ret) {
-					dev_err(hw->dev, "failed to enable clks\n");
-					return ret;
-				}
-			}
+			hw = dphy->phy_hw[i];
+			ret = hw ? clk_bulk_prepare_enable(hw->num_clks,
+							     hw->clks_bulk) : -ENODEV;
 		}
+		if (ret)
+			goto rollback;
 	}
 	return 0;
+
+rollback:
+	for (j = i - 1; j >= 0; j--) {
+		if (dphy->csi_info.dphy_vendor[j] == PHY_VENDOR_SAMSUNG) {
+			samsung_phy = dphy->phy_hw[j];
+			if (samsung_phy)
+				pm_runtime_put(samsung_phy->dev);
+		} else {
+			hw = dphy->phy_hw[j];
+			if (hw)
+				clk_bulk_disable_unprepare(hw->num_clks, hw->clks_bulk);
+		}
+	}
+	return ret;
 }
 
 static void csi2_dphy_disable_clk(struct csi2_dphy *dphy)
@@ -655,6 +684,11 @@ static int csi2_dphy_s_stream(struct v4l2_subdev *sd, int on)
 			return ret;
 		}
 		ret = csi2_dphy_s_stream_start(sd);
+		if (ret) {
+			csi2_dphy_disable_clk(dphy);
+			mutex_unlock(&dphy->mutex);
+			return ret;
+		}
 	} else {
 		if (!dphy->is_streaming) {
 			mutex_unlock(&dphy->mutex);

@@ -6,6 +6,8 @@
  */
 
 #include <linux/delay.h>
+#include <linux/of.h>
+#include <media/rk-imx415-native-fhd.h>
 #include <linux/pm_runtime.h>
 #include <linux/reset.h>
 #include <linux/iommu.h>
@@ -7497,6 +7499,7 @@ void rkcif_do_stop_stream(struct rkcif_stream *stream,
 	u64 fs_time = 0;
 	int on = 0;
 	struct rkmodule_channel_stream ch_stream;
+	bool native_already_stopped = false;
 
 	if (dev->chip_id < CHIP_RK3588_CIF)
 		mutex_lock(&dev->hw_dev->dev_lock);
@@ -7515,7 +7518,19 @@ void rkcif_do_stop_stream(struct rkcif_stream *stream,
 		stream->id, stream->cur_stream_mode, mode);
 
 	if (mode == stream->cur_stream_mode) {
-		if (!stream->is_pause_stream) {
+		if (stream->reset_stop_committed &&
+		    stream->state == RKCIF_STATE_RESET_IN_STREAMING &&
+		    !stream->dma_en) {
+			/* Only the owner of the previously committed RESET stop
+			 * may finalize READY. No second non-idempotent CSI stop.
+			 */
+			stream->reset_stop_committed = false;
+			stream->state = RKCIF_STATE_READY;
+			stream->stopping = false;
+			wake_up_all(&stream->wq_stopped);
+			native_already_stopped = true;
+		}
+		if (!native_already_stopped && !stream->is_pause_stream) {
 			if (!dev->sensor_linetime)
 				dev->sensor_linetime = rkcif_get_linetime(stream);
 			vblank = rkcif_get_sensor_vblank(dev);
@@ -7535,13 +7550,14 @@ void rkcif_do_stop_stream(struct rkcif_stream *stream,
 			} else {
 				stream->stopping = true;
 			}
-		} else if ((dev->sditf[0] && (!dev->sditf[0]->is_toisp_off)) ||
-			(stream->cifdev->channels[0].capture_info.mode == RKMODULE_ONE_CH_TO_MULTI_ISP && stream->id != 0)) {
+		} else if (!native_already_stopped &&
+			   ((dev->sditf[0] && (!dev->sditf[0]->is_toisp_off)) ||
+			   (stream->cifdev->channels[0].capture_info.mode == RKMODULE_ONE_CH_TO_MULTI_ISP && stream->id != 0))) {
 			stream->stopping = true;
-		} else {
+		} else if (!native_already_stopped) {
 			rkcif_stream_stop(stream);
 		}
-		if (stream->stopping == true) {
+		if (!native_already_stopped && stream->stopping == true) {
 			v4l2_dbg(3, rkcif_debug, &dev->v4l2_dev,
 				 "stream[%d] need wait stream stop\n",
 				 stream->id);
@@ -7727,6 +7743,8 @@ void rkcif_do_stop_stream(struct rkcif_stream *stream,
 		rkcif_free_buf_by_user_require(dev);
 	rkcif_free_fence(stream);
 	stream->cur_stream_mode &= ~mode;
+	if (!stream->cur_stream_mode)
+		stream->reset_stop_committed = false;
 	v4l2_info(&dev->v4l2_dev, "stream[%d] stopping finished, dma_en 0x%x\n", stream->id, stream->dma_en);
 
 	if (dev->chip_id < CHIP_RK3588_CIF)
@@ -10880,6 +10898,9 @@ static int rkcif_get_error_info(struct rkcif_device *cif_dev,
 
 static int rkcif_do_reset_work(struct rkcif_device *cif_dev,
 			       enum rkmodule_reset_src reset_src);
+static int rkcif_r70_native_reset_work(struct rkcif_device *cif_dev,
+				       void *owner);
+static bool rkcif_r70_native_imx415(const struct v4l2_subdev *sensor);
 
 static long rkcif_ioctl_default(struct file *file, void *fh,
 				bool valid_prio, unsigned int cmd, void *arg)
@@ -11274,15 +11295,83 @@ static int rkcif_dqbuf(struct file *file, void *priv, struct v4l2_buffer *p)
 	return ret;
 }
 
+/* R70 FullFOV bootstrap only AFTER VB2 has committed STREAMON or QBUF.
+ * video_ioctl2 holds vnode.vlock here. Never acquire it again.
+ */
+static int rkcif_r70_native_after_vb2(struct file *file)
+{
+	struct rkcif_stream *stream = video_drvdata(file);
+	struct rkcif_device *dev = stream->cifdev;
+	struct vb2_queue *q = &stream->vnode.buf_queue;
+	struct v4l2_subdev *sensor = dev->terminal_sensor.sd;
+	u32 state = RK_IMX415_FHD_UNCERTAIN;
+	int ret;
+
+	if (stream->id != RKCIF_STREAM_MIPI_ID0 ||
+	    !rkcif_r70_native_imx415(sensor))
+		return 0; /* Preserve other sensors and virtual cameras. */
+	lockdep_assert_held(&stream->vnode.vlock);
+	if (!vb2_is_streaming(q) || !q->start_streaming_called)
+		return 0; /* Not committed: late QBUF will get another chance. */
+	if (!q->owner || q->owner != file->private_data ||
+	    stream->state != RKCIF_STATE_STREAMING ||
+	    stream->cur_stream_mode != RKCIF_STREAM_MODE_CAPTURE) {
+		ret = -EBUSY;
+		goto poison;
+	}
+	ret = v4l2_subdev_call(sensor, core, command,
+				RK_IMX415_FHD_KERNEL_QUERY_CMD, &state);
+	if (ret == -EOPNOTSUPP)
+		return 0; /* Stock 4K/HDR mode not part of native recovery. */
+	if (ret)
+		goto poison;
+	if (state == RK_IMX415_FHD_RELEASED)
+		return 0; /* Exactly one XMSTA release per committed source epoch. */
+	if (state != RK_IMX415_FHD_IDLE) {
+		ret = -EPIPE;
+		goto poison;
+	}
+	ret = rkcif_r70_native_reset_work(dev, file->private_data);
+	if (ret)
+		goto poison;
+	ret = v4l2_subdev_call(sensor, core, command,
+				RK_IMX415_FHD_KERNEL_QUERY_CMD, &state);
+	if (!ret && state != RK_IMX415_FHD_RELEASED)
+		ret = -EIO;
+	if (!ret)
+		return 0;
+poison:
+	vb2_queue_error(q);
+	v4l2_err(&dev->v4l2_dev,
+		 "native FullFOV FHD bootstrap failed %d; STREAMOFF required\n", ret);
+	return ret;
+}
+
+static int rkcif_r70_vidioc_streamon(struct file *file, void *priv,
+                                     enum v4l2_buf_type type)
+{
+	int ret = vb2_ioctl_streamon(file, priv, type);
+
+	return ret ? ret : rkcif_r70_native_after_vb2(file);
+}
+
+static int rkcif_r70_vidioc_qbuf(struct file *file, void *priv,
+                                struct v4l2_buffer *buf)
+{
+	int ret = vb2_ioctl_qbuf(file, priv, buf);
+
+	return ret ? ret : rkcif_r70_native_after_vb2(file);
+}
+
 static const struct v4l2_ioctl_ops rkcif_v4l2_ioctl_ops = {
 	.vidioc_reqbufs = vb2_ioctl_reqbufs,
 	.vidioc_querybuf = vb2_ioctl_querybuf,
 	.vidioc_create_bufs = vb2_ioctl_create_bufs,
-	.vidioc_qbuf = vb2_ioctl_qbuf,
+	.vidioc_qbuf = rkcif_r70_vidioc_qbuf,
 	.vidioc_expbuf = vb2_ioctl_expbuf,
 	.vidioc_dqbuf = rkcif_dqbuf,
 	.vidioc_prepare_buf = vb2_ioctl_prepare_buf,
-	.vidioc_streamon = vb2_ioctl_streamon,
+	.vidioc_streamon = rkcif_r70_vidioc_streamon,
 	.vidioc_streamoff = vb2_ioctl_streamoff,
 	.vidioc_enum_input = rkcif_enum_input,
 	.vidioc_try_fmt_vid_cap_mplane = rkcif_try_fmt_vid_cap_mplane,
@@ -13565,7 +13654,10 @@ static int rkcif_streamon_in_reset(struct rkcif_device *cif_dev,
 			stream->curr_buf = NULL;
 			stream->next_buf = NULL;
 		}
-		if (!cif_dev->sditf[0] || cif_dev->sditf[0]->mode.rdbk_mode == RKISP_VICAP_RDBK_AIQ)
+		if ((reset_src == RKCIF_RESET_SRC_ERR_APP &&
+		     stream->cur_stream_mode == RKCIF_STREAM_MODE_CAPTURE) ||
+		    !cif_dev->sditf[0] ||
+		    cif_dev->sditf[0]->mode.rdbk_mode == RKISP_VICAP_RDBK_AIQ)
 			capture_mode = RKCIF_STREAM_MODE_CAPTURE;
 		else {
 			if (cif_dev->sditf[0]->mode.rdbk_mode < RKISP_VICAP_RDBK_AIQ)
@@ -13587,6 +13679,7 @@ static int rkcif_streamon_in_reset(struct rkcif_device *cif_dev,
 				 __func__, stream->id);
 			return ret;
 		}
+		stream->reset_stop_committed = false;
 
 		v4l2_dbg(1, rkcif_debug, &cif_dev->v4l2_dev,
 			 "resume stream[%d], frm_idx:%d, csi_sof:%d\n",
@@ -13693,6 +13786,122 @@ static int rkcif_do_reset_work_below_rk3588(struct rkcif_device *cif_dev,
 
 unlock_stream:
 	mutex_unlock(&hw->dev_lock);
+	return ret;
+}
+
+/* R70 private native FHD owner reset: never reset a receiver from a
+ * foreign FD or touch other active MIPI IDs. Caller already holds vdev.lock;
+ * stream_lock is a distinct mutex. No IRQ spinlock may be held over I2C.
+ */
+static bool rkcif_r70_native_imx415(const struct v4l2_subdev *sensor)
+{
+	const struct device *d;
+
+	if (!sensor || !sensor->dev)
+		return false;
+	d = sensor->dev;
+	return d->driver && !strcmp(d->driver->name, "imx415") &&
+	       d->of_node &&
+	       of_device_is_compatible(d->of_node, "sony,imx415");
+}
+
+static int rkcif_r70_native_stage(struct rkcif_device *dev, u32 stage)
+{
+	if (!rkcif_r70_native_imx415(dev->terminal_sensor.sd))
+		return -EOPNOTSUPP;
+	return v4l2_subdev_call(dev->terminal_sensor.sd, core, command,
+				RK_IMX415_FHD_KERNEL_STAGE_CMD, &stage);
+}
+
+static int rkcif_r70_native_csihost_quiet(struct rkcif_device *dev)
+{
+	struct rkcif_pipeline *pipe = &dev->pipe;
+	int i, found = 0, ret;
+
+	for (i = 0; i < pipe->num_subdevs; i++) {
+		if (strcmp(pipe->subdevs[i]->name, "rockchip-mipi-csi2"))
+			continue;
+		ret = v4l2_subdev_call(pipe->subdevs[i], core, command,
+				RK_IMX415_FHD_KERNEL_QUIET_CMD, NULL);
+		if (ret)
+			return ret;
+		found++;
+	}
+	return found == 1 ? 0 : -ENODEV;
+}
+
+static int rkcif_r70_native_reset_work(struct rkcif_device *cif_dev,
+				       void *owner)
+{
+	struct rkcif_stream *stream = &cif_dev->stream[RKCIF_STREAM_MIPI_ID0];
+	struct vb2_queue *q = &stream->vnode.buf_queue;
+	struct rkcif_stream *resume_stream[RKCIF_MAX_STREAM_MIPI] = { NULL };
+	struct rkcif_resume_info *resume_info = &cif_dev->reset_work.resume_info;
+	struct rkcif_timer *timer = &cif_dev->reset_watchdog_timer;
+	int i, ret;
+	bool stopped = false;
+
+	if (cif_dev->chip_id < CHIP_RK3588_CIF)
+		return -EOPNOTSUPP;
+	mutex_lock(&cif_dev->stream_lock);
+	if (cif_dev->reset_work_cancel || !owner || q->owner != owner ||
+	    !vb2_is_streaming(q) ||
+	    cif_dev->sditf_cnt != 1 ||
+	    cif_dev->hdr.hdr_mode != NO_HDR ||
+	    cif_dev->is_camera_over_bridge ||
+	    stream->state != RKCIF_STATE_STREAMING ||
+	    stream->cur_stream_mode != RKCIF_STREAM_MODE_CAPTURE) {
+		ret = -EBUSY;
+		goto done;
+	}
+	for (i = RKCIF_STREAM_MIPI_ID0 + 1; i < RKCIF_MAX_STREAM_MIPI; i++) {
+		struct rkcif_stream *other = &cif_dev->stream[i];
+
+		if (other->state != RKCIF_STATE_READY || other->dma_en ||
+		    other->cur_stream_mode) {
+			ret = -EBUSY;
+			goto done;
+		}
+	}
+	ret = rkcif_r70_native_stage(cif_dev, RKMODULE_NATIVE_FHD_PROBE);
+	if (ret)
+		goto done;
+	ret = rkcif_r70_native_stage(cif_dev, RKMODULE_NATIVE_FHD_HOLD);
+	if (ret)
+		goto done;
+
+	stopped = stream->state == RKCIF_STATE_STREAMING;
+	ret = rkcif_streamoff_in_reset(cif_dev, resume_stream, resume_info,
+					    RKCIF_RESET_SRC_ERR_APP);
+	/* Provenance must survive a downstream -EIO: VB2 STREAMOFF consumes it. */
+	if (stopped && stream->state == RKCIF_STATE_RESET_IN_STREAMING &&
+	    !stream->dma_en)
+		stream->reset_stop_committed = true;
+	if (ret)
+		goto done;
+
+	rkcif_do_soft_reset(cif_dev);
+	ret = rkcif_streamon_in_reset(cif_dev, resume_stream, resume_info,
+					   RKCIF_RESET_SRC_ERR_APP);
+	if (ret)
+		goto done;
+
+	ret = rkcif_r70_native_csihost_quiet(cif_dev);
+	if (ret)
+		goto done;
+	ret = rkcif_r70_native_stage(cif_dev, RKMODULE_NATIVE_FHD_WAKE);
+	if (ret)
+		goto done;
+	ret = rkcif_r70_native_stage(cif_dev, RKMODULE_NATIVE_FHD_RELEASE);
+	if (ret)
+		goto done;
+	timer->csi2_err_triggered_cnt = 0;
+	rkcif_monitor_reset_event(cif_dev);
+done:
+	if (ret)
+		v4l2_err(&cif_dev->v4l2_dev,
+			 "native FHD owner reset failed %d; VB2 must STREAMOFF\n", ret);
+	mutex_unlock(&cif_dev->stream_lock);
 	return ret;
 }
 

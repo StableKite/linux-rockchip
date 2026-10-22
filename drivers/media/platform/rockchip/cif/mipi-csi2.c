@@ -19,6 +19,7 @@
 #include <linux/rk-camera-module.h>
 #include <media/v4l2-ioctl.h>
 #include "mipi-csi2.h"
+#include <media/rk-imx415-native-fhd.h>
 #include <linux/regulator/consumer.h>
 
 static int csi2_debug;
@@ -245,6 +246,8 @@ static int csi2_hw_start(struct csi2_hw *csi2_hw, enum host_type_t host_type)
 	if (ret) {
 		dev_err(csi2_hw->dev, "%s: enable clks failed, %s\n",
 			 __func__, csi2_hw->dev_name);
+		/* No active hardware/IRQ was acquired by this first start. */
+		atomic_dec(&csi2_hw->stream_count);
 		return ret;
 	}
 	enable_irq(csi2_hw->irq1);
@@ -255,7 +258,10 @@ static int csi2_hw_start(struct csi2_hw *csi2_hw, enum host_type_t host_type)
 
 static void csi2_hw_stop(struct csi2_hw *csi2_hw)
 {
-	if (atomic_dec_return(&csi2_hw->stream_count) > 0)
+	/* A failed first start or a duplicate stop has no stream ref.
+	 * Do not disable another owner's IRQ or clocks on unmatched OFF.
+	 */
+	if (atomic_dec_if_positive(&csi2_hw->stream_count) != 0)
 		return;
 	disable_irq(csi2_hw->irq1);
 	disable_irq(csi2_hw->irq2);
@@ -286,9 +292,15 @@ static int csi2_start(struct csi2_dev *csi2)
 	csi2->irq2_timestamp = 0;
 	for (i = 0; i < csi2->csi_info.csi_num; i++) {
 		csi_idx = csi2->csi_info.csi_idx[i];
-		ret |= csi2_hw_start(csi2->csi2_hw[csi_idx], host_type);
+		ret = csi2_hw_start(csi2->csi2_hw[csi_idx], host_type);
+		if (ret)
+			goto err_assert_reset;
 	}
 
+	if (!csi2->src_sd) {
+		ret = -ENODEV;
+		goto err_assert_reset;
+	}
 	pr_debug("stream sd: %s\n", csi2->src_sd->name);
 	ret = v4l2_subdev_call(csi2->src_sd, video, s_stream, 1);
 	ret = (ret && ret != -ENOIOCTLCMD) ? ret : 0;
@@ -301,7 +313,10 @@ static int csi2_start(struct csi2_dev *csi2)
 	return 0;
 
 err_assert_reset:
-	for (i = 0; i < csi2->csi_info.csi_num; i++) {
+	/* i counts only successfully acquired CSIHOST references.
+	 * Never stop the host whose clock/IRQ start failed.
+	 */
+	while (i-- > 0) {
 		csi_idx = csi2->csi_info.csi_idx[i];
 		csi2_hw_stop(csi2->csi2_hw[csi_idx]);
 	}
@@ -766,11 +781,52 @@ static long rkcif_csi2_compat_ioctl32(struct v4l2_subdev *sd,
 }
 #endif
 
+/* Native full-FOV sensor receive window: two read-only CSIHOST PHY_STATE
+ * witnesses, 1 ms apart. This is not a PHY repair or a transport PASS.
+ */
+static long rkcif_r70_native_quiet(struct v4l2_subdev *sd,
+                                   unsigned int cmd, void *arg)
+{
+	struct csi2_dev *csi2 = sd_to_dev(sd);
+	struct v4l2_subdev *sensor;
+	struct csi2_hw *hw;
+	u32 first, second;
+	int idx;
+
+	if (cmd != RK_IMX415_FHD_KERNEL_QUIET_CMD)
+		return -ENOIOCTLCMD;
+	sensor = get_remote_sensor(sd);
+	if (!sensor || !sensor->dev || !sensor->dev->driver ||
+	    strcmp(sensor->dev->driver->name, "imx415") ||
+	    !sensor->dev->of_node ||
+	    !of_device_is_compatible(sensor->dev->of_node, "sony,imx415"))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&csi2->lock);
+	if (csi2->stream_count != 1 || csi2->csi_info.csi_num != 1) {
+		mutex_unlock(&csi2->lock);
+		return -EBUSY;
+	}
+	idx = csi2->csi_info.csi_idx[0];
+	if (idx < 0 || idx >= RK_MAX_CSI_HW ||
+	    !(hw = csi2->csi2_hw[idx]) || !hw->base) {
+		mutex_unlock(&csi2->lock);
+		return -ENODEV;
+	}
+	first = read_csihost_reg(hw->base, CSIHOST_PHY_STATE);
+	usleep_range(1000, 1500);
+	second = read_csihost_reg(hw->base, CSIHOST_PHY_STATE);
+	mutex_unlock(&csi2->lock);
+	return (first & 0x5f0) == 0x4f0 &&
+	       (second & 0x5f0) == 0x4f0 ? 0 : -EBUSY;
+}
+
 static const struct v4l2_subdev_core_ops csi2_core_ops = {
 	.subscribe_event = rkcif_csi2_subscribe_event,
 	.unsubscribe_event = v4l2_event_subdev_unsubscribe,
 	.s_power = rkcif_csi2_s_power,
 	.ioctl = rkcif_csi2_ioctl,
+	.command = rkcif_r70_native_quiet,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl32 = rkcif_csi2_compat_ioctl32,
 #endif

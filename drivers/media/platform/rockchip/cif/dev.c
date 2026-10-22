@@ -1448,6 +1448,8 @@ static int __cif_pipeline_prepare(struct rkcif_pipeline *p,
 			break;
 
 		sd = media_entity_to_v4l2_subdev(pad->entity);
+		if (p->num_subdevs >= RKCIF_MAX_PIPELINE)
+			return -E2BIG;
 		p->subdevs[p->num_subdevs++] = sd;
 		me = &sd->entity;
 		if (me->num_pads == 1)
@@ -1473,18 +1475,29 @@ static int rkcif_pipeline_open(struct rkcif_pipeline *p,
 	if (atomic_inc_return(&p->power_cnt) > 1)
 		return 0;
 
-	/* go through media graphic and get subdevs */
-	if (prepare)
-		__cif_pipeline_prepare(p, me);
-
-	if (!p->num_subdevs)
-		return -EINVAL;
-
+	/* Atomic reference is acquired before walking the graph. Every failed
+	 * first open must release it, including an absent/oversized graph.
+	 */
+	if (prepare) {
+		ret = __cif_pipeline_prepare(p, me);
+		if (ret < 0)
+			goto undo_open;
+	}
+	if (!p->num_subdevs) {
+		ret = -EINVAL;
+		goto undo_open;
+	}
 	ret = __cif_pipeline_s_cif_clk(p);
 	if (ret < 0)
-		return ret;
+		goto undo_open;
 
 	return 0;
+
+undo_open:
+	p->num_subdevs = 0;
+	memset(p->subdevs, 0, sizeof(p->subdevs));
+	atomic_dec(&p->power_cnt);
+	return ret;
 }
 
 static int rkcif_pipeline_close(struct rkcif_pipeline *p)
@@ -1714,9 +1727,19 @@ static int rkcif_pipeline_set_stream(struct rkcif_pipeline *p, bool on)
 			}
 		}
 	} else if (cif_dev->hdr.hdr_mode == NO_HDR || cif_dev->hdr.hdr_mode == HDR_CIS_MERGE) {
-		if ((on && atomic_inc_return(&p->stream_cnt) > 1) ||
-		    (!on && atomic_dec_return(&p->stream_cnt) > 0))
-			return 0;
+		if (on) {
+			if (atomic_inc_return(&p->stream_cnt) > 1)
+				return 0;
+		} else {
+			/* Never decrement an unpaired OFF below zero; atomic also
+			 * serializes multiple concurrent owners without a sleep lock.
+			 */
+			ret = atomic_dec_if_positive(&p->stream_cnt);
+			if (ret < 0)
+				return -EINVAL;
+			if (ret > 0)
+				return 0;
+		}
 
 		if (on) {
 			rockchip_set_system_status(SYS_STATUS_CIF0);
@@ -1884,6 +1907,10 @@ err_stream_off:
 	for (--i; i >= 0; --i)
 		v4l2_subdev_call(p->subdevs[i], video, s_stream, false);
 	rockchip_clear_system_status(SYS_STATUS_CIF0);
+	/* All five error edges here follow a failed s_stream(on) after
+	 * a ref-counted stream-on admission, including combined/HDR paths.
+	 */
+	atomic_dec(&p->stream_cnt);
 	return ret;
 }
 

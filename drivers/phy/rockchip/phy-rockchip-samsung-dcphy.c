@@ -2305,10 +2305,18 @@ static int samsung_dcphy_rx_stream_off(struct csi2_dphy *dphy,
 	if (!sensor)
 		return -ENODEV;
 
-	if (atomic_dec_return(&samsung->stream_cnt))
-		return 0;
-
 	mutex_lock(&samsung->mutex);
+	/* Do not decrement a non-existent streaming reference. Keep the PHY
+	 * state unchanged if an unexpected owner issues a second STREAMOFF.
+	 */
+	if (atomic_read(&samsung->stream_cnt) <= 0) {
+		mutex_unlock(&samsung->mutex);
+		return -EINVAL;
+	}
+	if (atomic_dec_return(&samsung->stream_cnt) > 0) {
+		mutex_unlock(&samsung->mutex);
+		return 0;
+	}
 	if (samsung->s_phy_rst)
 		reset_control_assert(samsung->s_phy_rst);
 

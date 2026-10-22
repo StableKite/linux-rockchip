@@ -47,6 +47,7 @@
 #include <media/media-entity.h>
 #include <media/v4l2-async.h>
 #include <media/v4l2-ctrls.h>
+#include <media/rk-imx415-native-fhd.h>
 #include <media/v4l2-subdev.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/rk-preisp.h>
@@ -201,6 +202,10 @@ struct imx415_mode {
 	u32 bpp;
 	const struct regval *global_reg_list;
 	const struct regval *reg_list;
+	/* Write exact 4K timing/CSI overlay AFTER V4L2 controls. */
+	const struct regval *post_ctrl_reg_list;
+	/* Full sensor binning 134-op replace_init; XMSTA stays STOP until RX. */
+	bool fullhd_replace_init;
 	u32 hdr_mode;
 	u32 vc[PAD_MAX];
 	u32 xvclk;
@@ -252,6 +257,7 @@ struct imx415 {
 	u32			pclk;
 	u32			tline;
 	bool			is_tline_init;
+	u32			native_fhd_stage;
 };
 
 static struct rkmodule_csi_dphy_param dcphy_param = {
@@ -1082,6 +1088,280 @@ static __maybe_unused const struct regval imx415_linear_12bit_1284x720_2376M_reg
  *	.get_selection
  * }
  */
+/* R70 additive native FullFOV modes. Preserve stock HDR/other cameras.
+ * Exact register policy from R90 44/44/134 seed; source-only pending receiver.
+ */
+static const struct regval imx415_4k90_44op_overlay[] = {
+	{0x3024, 0xbe},
+	{0x3025, 0x08},
+	{0x3026, 0x00},
+	{0x3028, 0x6d},
+	{0x3029, 0x01},
+	{0x3031, 0x00},
+	{0x3032, 0x00},
+	{0x3033, 0x00},
+	{0x3050, 0x96},
+	{0x3051, 0x00},
+	{0x3052, 0x00},
+	{0x3008, 0x7f},
+	{0x3009, 0x00},
+	{0x300a, 0x5b},
+	{0x300b, 0x00},
+	{0x3115, 0x00},
+	{0x3116, 0x24},
+	{0x3118, 0x00},
+	{0x3119, 0x01},
+	{0x311a, 0xe0},
+	{0x311b, 0x00},
+	{0x311e, 0x24},
+	{0x4004, 0x48},
+	{0x4005, 0x09},
+	{0x400c, 0x01},
+	{0x4074, 0x00},
+	{0x4018, 0xe7},
+	{0x4019, 0x00},
+	{0x401a, 0x8f},
+	{0x401b, 0x00},
+	{0x401c, 0x8f},
+	{0x401d, 0x00},
+	{0x401e, 0x7f},
+	{0x401f, 0x02},
+	{0x4020, 0x97},
+	{0x4021, 0x00},
+	{0x4022, 0x0f},
+	{0x4023, 0x01},
+	{0x4024, 0x97},
+	{0x4025, 0x00},
+	{0x4026, 0xf7},
+	{0x4027, 0x00},
+	{0x4028, 0x7f},
+	{0x4029, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct regval imx415_4k75_1782_base_regs[] = {
+
+	/* V600S26D: native RAW10 source-linear base only; exact44 is applied in start_stream before CTRL_MODE release. */
+	{0x3020, 0x00},
+	{0x3021, 0x00},
+	{0x3022, 0x00},
+	{0x3024, 0xca},
+	{0x3025, 0x08},
+	{0x3028, 0x4c},
+	{0x3029, 0x04},
+	{0x302c, 0x00},
+	{0x302d, 0x00},
+	{0x3033, 0x05},
+	{0x3050, 0x08},
+	{0x3051, 0x00},
+	{0x3054, 0x19},
+	{0x3058, 0x3e},
+	{0x3060, 0x25},
+	{0x3064, 0x4a},
+	{0x30cf, 0x00},
+	{0x3118, 0xc0},
+	{0x3260, 0x01},
+	{0x400c, 0x00},
+	{0x4018, 0x7f},
+	{0x401a, 0x37},
+	{0x401c, 0x37},
+	{0x401e, 0xf7},
+	{0x401f, 0x00},
+	{0x4020, 0x3f},
+	{0x4022, 0x6f},
+	{0x4024, 0x3f},
+	{0x4026, 0x5f},
+	{0x4028, 0x2f},
+	{0x4074, 0x01},
+	{REG_NULL, 0x00},
+};
+
+static const struct regval imx415_4k75_44op_overlay[] = {
+	{0x3024, 0xca},
+	{0x3025, 0x08},
+	{0x3026, 0x00},
+	{0x3028, 0xb8},
+	{0x3029, 0x01},
+	{0x3031, 0x00},
+	{0x3032, 0x00},
+	{0x3033, 0x04},
+	{0x3050, 0x96},
+	{0x3051, 0x00},
+	{0x3052, 0x00},
+	{0x3008, 0x7f},
+	{0x3009, 0x00},
+	{0x300a, 0x5b},
+	{0x300b, 0x00},
+	{0x3115, 0x00},
+	{0x3116, 0x24},
+	{0x3118, 0xc0},
+	{0x3119, 0x00},
+	{0x311a, 0xe0},
+	{0x311b, 0x00},
+	{0x311e, 0x24},
+	{0x4004, 0x48},
+	{0x4005, 0x09},
+	{0x400c, 0x01},
+	{0x4074, 0x00},
+	{0x4018, 0xb7},
+	{0x4019, 0x00},
+	{0x401a, 0x67},
+	{0x401b, 0x00},
+	{0x401c, 0x6f},
+	{0x401d, 0x00},
+	{0x401e, 0xdf},
+	{0x401f, 0x01},
+	{0x4020, 0x6f},
+	{0x4021, 0x00},
+	{0x4022, 0xcf},
+	{0x4023, 0x00},
+	{0x4024, 0x6f},
+	{0x4025, 0x00},
+	{0x4026, 0xb7},
+	{0x4027, 0x00},
+	{0x4028, 0x5f},
+	{0x4029, 0x00},
+	{REG_NULL, 0x00},
+};
+
+static const struct regval imx415_fhd_r80_h357_134op_regs[] = {
+	{0x3002, 0x01},
+	{0x3008, 0x7f},
+	{0x300a, 0x5b},
+	{0x3031, 0x00},
+	{0x3032, 0x00},
+	{0x30c1, 0x00},
+	{0x30d9, 0x06},
+	{0x3116, 0x24},
+	{0x311e, 0x24},
+	{0x32d4, 0x21},
+	{0x32ec, 0xa1},
+	{0x3452, 0x7f},
+	{0x3453, 0x03},
+	{0x358a, 0x04},
+	{0x35a1, 0x02},
+	{0x36bc, 0x0c},
+	{0x36cc, 0x53},
+	{0x36cd, 0x00},
+	{0x36ce, 0x3c},
+	{0x36d0, 0x8c},
+	{0x36d1, 0x00},
+	{0x36d2, 0x71},
+	{0x36d4, 0x3c},
+	{0x36d6, 0x53},
+	{0x36d7, 0x00},
+	{0x36d8, 0x71},
+	{0x36da, 0x8c},
+	{0x36db, 0x00},
+	{0x3701, 0x00},
+	{0x3724, 0x02},
+	{0x3726, 0x02},
+	{0x3732, 0x02},
+	{0x3734, 0x03},
+	{0x3736, 0x03},
+	{0x3742, 0x03},
+	{0x3862, 0xe0},
+	{0x38cc, 0x30},
+	{0x38cd, 0x2f},
+	{0x395c, 0x0c},
+	{0x3a42, 0xd1},
+	{0x3a4c, 0x77},
+	{0x3ae0, 0x02},
+	{0x3aec, 0x0c},
+	{0x3b00, 0x2e},
+	{0x3b06, 0x29},
+	{0x3b98, 0x25},
+	{0x3b99, 0x21},
+	{0x3b9b, 0x13},
+	{0x3b9c, 0x13},
+	{0x3b9d, 0x13},
+	{0x3b9e, 0x13},
+	{0x3ba1, 0x00},
+	{0x3ba2, 0x06},
+	{0x3ba3, 0x0b},
+	{0x3ba4, 0x10},
+	{0x3ba5, 0x14},
+	{0x3ba6, 0x18},
+	{0x3ba7, 0x1a},
+	{0x3ba8, 0x1a},
+	{0x3ba9, 0x1a},
+	{0x3bac, 0xed},
+	{0x3bad, 0x01},
+	{0x3bae, 0xf6},
+	{0x3baf, 0x02},
+	{0x3bb0, 0xa2},
+	{0x3bb1, 0x03},
+	{0x3bb2, 0xe0},
+	{0x3bb3, 0x03},
+	{0x3bb4, 0xe0},
+	{0x3bb5, 0x03},
+	{0x3bb6, 0xe0},
+	{0x3bb7, 0x03},
+	{0x3bb8, 0xe0},
+	{0x3bba, 0xe0},
+	{0x3bbc, 0xda},
+	{0x3bbe, 0x88},
+	{0x3bc0, 0x44},
+	{0x3bc2, 0x7b},
+	{0x3bc4, 0xa2},
+	{0x3bc8, 0xbd},
+	{0x3bca, 0xbd},
+	{0x4004, 0x48},
+	{0x4005, 0x09},
+	{0x3020, 0x01},
+	{0x3021, 0x01},
+	{0x3022, 0x01},
+	{0x3024, 0x77},
+	{0x3025, 0x04},
+	{0x3026, 0x00},
+	{0x3028, 0x65},
+	{0x3029, 0x01},
+	{0x302a, 0x00},
+	{0x302c, 0x00},
+	{0x302d, 0x00},
+	{0x3031, 0x00},
+	{0x3032, 0x00},
+	{0x3033, 0x08},
+	{0x3050, 0x57},
+	{0x3051, 0x01},
+	{0x3052, 0x00},
+	{0x3054, 0x09},
+	{0x3058, 0x3e},
+	{0x3060, 0x4d},
+	{0x3064, 0x4a},
+	{0x3008, 0x7f},
+	{0x3009, 0x00},
+	{0x300a, 0x5b},
+	{0x300b, 0x00},
+	{0x3115, 0x00},
+	{0x3116, 0x24},
+	{0x3118, 0xa0},
+	{0x3119, 0x00},
+	{0x311a, 0xe0},
+	{0x311b, 0x00},
+	{0x311e, 0x24},
+	{0x30cf, 0x01},
+	{0x30d9, 0x02},
+	{0x30da, 0x01},
+	{0x3260, 0x00},
+	{0x3701, 0x00},
+	{0x4004, 0x48},
+	{0x4005, 0x09},
+	{0x400c, 0x01},
+	{0x4018, 0xa7},
+	{0x401a, 0x57},
+	{0x401c, 0x5f},
+	{0x401e, 0x97},
+	{0x401f, 0x01},
+	{0x4020, 0x5f},
+	{0x4022, 0xaf},
+	{0x4024, 0x5f},
+	{0x4026, 0x9f},
+	{0x4028, 0x4f},
+	{0x4074, 0x00},
+	{REG_NULL, 0x00},
+};
+
 static const struct imx415_mode supported_modes[] = {
 	/*
 	 * frame rate = 1 / (Vtt * 1H) = 1 / (VMAX * 1H)
@@ -1301,6 +1581,44 @@ static const struct imx415_mode supported_modes[] = {
 		.vc[PAD3] = 1,//M->csi wr2
 		.xvclk = IMX415_XVCLK_FREQ_37M,
 	},
+	/* StableKite R70: four-lane full-frame RAW10 90.9 (review pending CSI). */
+	{
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 3864, .height = 2192,
+		.max_fps = { .numerator = 10000, .denominator = 909000 },
+		.hts_def = 7300, .vts_def = 2238, .exp_def = 2088,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_linear_10bit_3864x2192_891M_regs,
+		.post_ctrl_reg_list = imx415_4k90_44op_overlay,
+		.hdr_mode = NO_HDR, .mipi_freq_idx = 4, .bpp = 10,
+		.vc[PAD0] = 0, .xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	/* Full-frame 75 fps, exact 1782 Mbps/lane timing. */
+	{
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 3864, .height = 2192,
+		.max_fps = { .numerator = 10000, .denominator = 750000 },
+		.hts_def = 4400, .vts_def = 2250, .exp_def = 2100,
+		.global_reg_list = imx415_global_10bit_3864x2192_regs,
+		.reg_list = imx415_4k75_1782_base_regs,
+		.post_ctrl_reg_list = imx415_4k75_44op_overlay,
+		.hdr_mode = NO_HDR, .mipi_freq_idx = 3, .bpp = 10,
+		.vc[PAD0] = 0, .xvclk = IMX415_XVCLK_FREQ_37M,
+	},
+	/* Native 1944x1097 2x2 full-sensor binning H357/1486 Mb/s/lane.
+	 * XMSTA remains STOP until private kernel owner prepares CSI receiver.
+	 */
+	{
+		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
+		.width = 1944, .height = 1097,
+		.max_fps = { .numerator = 10000, .denominator = 909360 },
+		.hts_def = 3570, .vts_def = 1143, .exp_def = 800,
+		.global_reg_list = NULL,
+		.reg_list = imx415_fhd_r80_h357_134op_regs,
+		.fullhd_replace_init = true,
+		.hdr_mode = NO_HDR, .mipi_freq_idx = 2, .bpp = 10,
+		.vc[PAD0] = 0, .xvclk = IMX415_XVCLK_FREQ_37M,
+	},
 };
 
 static const struct imx415_mode supported_modes_2lane[] = {
@@ -1455,6 +1773,13 @@ imx415_find_best_fit(struct imx415 *imx415, struct v4l2_subdev_format *fmt)
 	int cur_best_fit_dist = -1;
 	unsigned int i;
 
+	/* Keep a V4L2 s_frame_interval choice across a same-format S_FMT. */
+	if (imx415->cur_mode &&
+	    imx415->cur_mode->bus_fmt == framefmt->code &&
+	    imx415->cur_mode->width == framefmt->width &&
+	    imx415->cur_mode->height == framefmt->height)
+		return imx415->cur_mode;
+
 	for (i = 0; i < imx415->cfg_num; i++) {
 		dist = imx415_get_reso_dist(&imx415->supported_modes[i], framefmt);
 		if ((cur_best_fit_dist == -1 || dist < cur_best_fit_dist) &&
@@ -1607,6 +1932,80 @@ static int imx415_g_frame_interval(struct v4l2_subdev *sd,
 	fi->interval = mode->max_fps;
 
 	return 0;
+}
+
+/* Only a requested 4K frame-interval may choose between 75 and 90.9.
+ * Selection requires a stopped stream and <=2% rational FPS error.
+ */
+static int imx415_s_frame_interval(struct v4l2_subdev *sd,
+				   struct v4l2_subdev_frame_interval *fi)
+{
+	struct imx415 *imx415 = to_imx415(sd);
+	const struct imx415_mode *chosen = NULL;
+	struct v4l2_fract wanted = fi->interval;
+	u64 best = ~0ULL;
+	unsigned int i;
+	int ret = 0;
+
+	mutex_lock(&imx415->mutex);
+	if (imx415->streaming) {
+		ret = -EBUSY;
+		goto out;
+	}
+	if (fi->pad || !wanted.numerator || !wanted.denominator) {
+		ret = -EINVAL;
+		goto out;
+	}
+	for (i = 0; i < imx415->cfg_num; i++) {
+		const struct imx415_mode *m = &imx415->supported_modes[i];
+		s64 delta;
+		u64 dist, limit;
+
+		if (m->hdr_mode != imx415->cur_mode->hdr_mode ||
+	    m->bus_fmt != imx415->cur_mode->bus_fmt ||
+		    m->width != imx415->cur_mode->width ||
+		    m->height != imx415->cur_mode->height)
+			continue;
+		delta = (s64)m->max_fps.denominator * wanted.numerator -
+			(s64)wanted.denominator * m->max_fps.numerator;
+		dist = delta < 0 ? -delta : delta;
+		limit = (u64)m->max_fps.denominator * wanted.numerator / 50;
+		if (dist <= limit && dist < best) {
+			chosen = m;
+			best = dist;
+		}
+	}
+	if (!chosen) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (chosen != imx415->cur_mode) {
+		s64 hblank, vblank;
+		u64 pixel_rate;
+		u8 lanes = imx415->bus_cfg.bus.mipi_csi2.num_data_lanes;
+
+		imx415_change_mode(imx415, chosen);
+		hblank = chosen->hts_def - chosen->width;
+		vblank = chosen->vts_def - chosen->height;
+		__v4l2_ctrl_modify_range(imx415->hblank,
+					 hblank, hblank, 1, hblank);
+		__v4l2_ctrl_modify_range(imx415->vblank, 46,
+				 IMX415_VTS_MAX - chosen->height, 1, vblank);
+		__v4l2_ctrl_s_ctrl(imx415->vblank, vblank);
+		__v4l2_ctrl_modify_range(imx415->exposure,
+					 imx415->exposure->minimum,
+					 chosen->vts_def - 8,
+					 imx415->exposure->step, chosen->exp_def);
+		__v4l2_ctrl_s_ctrl(imx415->exposure, chosen->exp_def);
+		__v4l2_ctrl_s_ctrl(imx415->link_freq, chosen->mipi_freq_idx);
+		pixel_rate = (u32)link_freq_items[chosen->mipi_freq_idx] /
+			chosen->bpp * 2 * lanes;
+		__v4l2_ctrl_s_ctrl_int64(imx415->pixel_rate, pixel_rate);
+	}
+	fi->interval = chosen->max_fps;
+out:
+	mutex_unlock(&imx415->mutex);
+	return ret;
 }
 
 static int imx415_g_mbus_config(struct v4l2_subdev *sd, unsigned int pad_id,
@@ -2173,6 +2572,177 @@ static int imx415_get_channel_info(struct imx415 *imx415, struct rkmodule_channe
 	return 0;
 }
 
+enum imx415_native_fhd_state {
+	IMX415_FHD_IDLE = 0,
+	IMX415_FHD_HOLDING,
+	IMX415_FHD_WAKING,
+	IMX415_FHD_RELEASED,
+	IMX415_FHD_UNCERTAIN,
+};
+
+static int imx415_native_fhd_check_reg(struct imx415 *imx415,
+					u16 address, u32 expected)
+{
+	u32 actual;
+	int ret = imx415_read_reg(imx415->client, address, 1, &actual);
+
+	if (ret)
+		return ret;
+	return actual == expected ? 0 : -EIO;
+}
+
+static int imx415_native_fhd_anchor(struct imx415 *imx415, u32 mode,
+					u32 xmsta)
+{
+	static const struct { u16 addr; u8 value; } known[] = {
+		{0x301c, 0}, {0x30e4, 0}, /* FullFOV, no test pattern */
+		{0x3020, 1}, {0x3021, 1}, {0x3022, 1},
+		{0x3024, 0x77}, {0x3025, 0x04}, {0x3026, 0},
+		{0x3028, 0x65}, {0x3029, 0x01},
+		{0x3050, 0x57}, {0x3051, 0x01}, {0x3052, 0},
+	};
+	unsigned int i;
+	int ret;
+
+	ret = imx415_native_fhd_check_reg(imx415, 0x3000, mode);
+	if (ret)
+		return ret;
+	ret = imx415_native_fhd_check_reg(imx415, 0x3002, xmsta);
+	if (ret)
+		return ret;
+	for (i = 0; i < ARRAY_SIZE(known); i++) {
+		ret = imx415_native_fhd_check_reg(imx415,
+					known[i].addr, known[i].value);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+static long imx415_native_fhd_stage(struct imx415 *imx415, u32 stage)
+{
+	int ret = 0;
+
+	mutex_lock(&imx415->mutex);
+	if (imx415->cur_mode->width != 1944 ||
+	    imx415->cur_mode->height != 1097 ||
+	    !imx415->cur_mode->fullhd_replace_init) {
+		ret = -EOPNOTSUPP; /* 4K modes keep original reset path */
+		goto done;
+	}
+	if (!imx415->streaming || imx415->is_thunderboot) {
+		ret = -EBUSY;
+		goto done;
+	}
+	switch (stage) {
+	case RKMODULE_NATIVE_FHD_PROBE:
+		ret = imx415->native_fhd_stage == IMX415_FHD_IDLE ? 0 : -EBUSY;
+		if (!ret)
+			ret = imx415_native_fhd_anchor(imx415, 0, 1);
+		break;
+	case RKMODULE_NATIVE_FHD_HOLD:
+		if (imx415->native_fhd_stage != IMX415_FHD_IDLE) {
+			ret = -EBUSY;
+			break;
+		}
+		/* Mark uncertain BEFORE the first I2C side effect. */
+		imx415->native_fhd_stage = IMX415_FHD_UNCERTAIN;
+		ret = imx415_native_fhd_anchor(imx415, 0, 1);
+		if (ret)
+			break;
+		ret = imx415_write_reg(imx415->client, 0x3000, 1, 1);
+		if (ret)
+			break;
+		ret = imx415_native_fhd_anchor(imx415, 1, 1);
+		if (ret)
+			break;
+		usleep_range(80000, 81000);
+		ret = imx415_native_fhd_anchor(imx415, 1, 1);
+		if (!ret)
+			imx415->native_fhd_stage = IMX415_FHD_HOLDING;
+		break;
+	case RKMODULE_NATIVE_FHD_WAKE:
+		if (imx415->native_fhd_stage != IMX415_FHD_HOLDING) {
+			ret = -EBUSY;
+			break;
+		}
+		imx415->native_fhd_stage = IMX415_FHD_UNCERTAIN;
+		ret = imx415_native_fhd_anchor(imx415, 1, 1);
+		if (ret)
+			break;
+		ret = imx415_write_reg(imx415->client, 0x3000, 1, 0);
+		if (ret)
+			break;
+		usleep_range(80000, 81000);
+		ret = imx415_native_fhd_anchor(imx415, 0, 1);
+		if (!ret)
+			imx415->native_fhd_stage = IMX415_FHD_WAKING;
+		break;
+	case RKMODULE_NATIVE_FHD_RELEASE:
+		if (imx415->native_fhd_stage != IMX415_FHD_WAKING) {
+			ret = -EBUSY;
+			break;
+		}
+		imx415->native_fhd_stage = IMX415_FHD_UNCERTAIN;
+		ret = imx415_native_fhd_anchor(imx415, 0, 1);
+		if (ret)
+			break;
+		ret = imx415_write_reg(imx415->client, 0x3002, 1, 0);
+		if (ret)
+			break;
+		ret = imx415_native_fhd_anchor(imx415, 0, 0);
+		if (!ret)
+			imx415->native_fhd_stage = IMX415_FHD_RELEASED;
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+	if (ret && stage != RKMODULE_NATIVE_FHD_PROBE)
+		dev_err(&imx415->client->dev,
+			"native FHD stage %u failed %d: source epoch uncertain\n",
+			stage, ret);
+done:
+	mutex_unlock(&imx415->mutex);
+	return ret;
+}
+
+/* Private in-kernel V4L2 core.command: the subdev ioctl syscall only
+ * forwards to core.ioctl, NEVER to core.command. This stage cannot be
+ * triggered directly by /dev/v4l-subdevN, even by a privileged caller.
+ * Sensor mutex/one-shot state remains the final I2C safety fence.
+ */
+static long imx415_native_fhd_kernel_command(struct v4l2_subdev *sd,
+                                             unsigned int cmd, void *arg)
+{
+    struct imx415 *imx415 = to_imx415(sd);
+    int ret;
+
+    if (!arg)
+        return -EINVAL;
+    if (cmd == RK_IMX415_FHD_KERNEL_STAGE_CMD)
+        return imx415_native_fhd_stage(imx415, *(u32 *)arg);
+    if (cmd != RK_IMX415_FHD_KERNEL_QUERY_CMD)
+        return -ENOIOCTLCMD;
+
+    /* Read-only, mutex-serialized state. No false RELEASED on an
+     * interrupted I2C stage, no user-visible command or CAP check.
+     */
+    mutex_lock(&imx415->mutex);
+    if (imx415->cur_mode->width != 1944 ||
+        imx415->cur_mode->height != 1097 ||
+        !imx415->cur_mode->fullhd_replace_init) {
+        ret = -EOPNOTSUPP; /* Original 4K modes must bypass. */
+    } else if (!imx415->streaming || imx415->is_thunderboot) {
+        ret = -EBUSY;
+    } else {
+        *(u32 *)arg = imx415->native_fhd_stage;
+        ret = 0;
+    }
+    mutex_unlock(&imx415->mutex);
+    return ret;
+}
+
 static long imx415_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx415 *imx415 = to_imx415(sd);
@@ -2488,10 +3058,17 @@ static int __imx415_start_stream(struct imx415 *imx415)
 {
 	int ret;
 
+	if (imx415->cur_mode->fullhd_replace_init && imx415->is_thunderboot)
+		return -EBUSY;
+	/* No source release is valid after an unsuccessful new initialization. */
+	imx415->native_fhd_stage = IMX415_FHD_IDLE;
 	if (!imx415->is_thunderboot) {
-		ret = imx415_write_array(imx415->client, imx415->cur_mode->global_reg_list);
-		if (ret)
-			return ret;
+		if (imx415->cur_mode->global_reg_list) {
+			ret = imx415_write_array(imx415->client,
+					 imx415->cur_mode->global_reg_list);
+			if (ret)
+				return ret;
+		}
 		ret = imx415_write_array(imx415->client, imx415->cur_mode->reg_list);
 		if (ret)
 			return ret;
@@ -2513,18 +3090,36 @@ static int __imx415_start_stream(struct imx415 *imx415)
 			return ret;
 		}
 	}
+	/* Apply exact vendor 44-op policy after control handler setup. */
+	if (imx415->cur_mode->post_ctrl_reg_list) {
+		ret = imx415_write_array(imx415->client,
+					 imx415->cur_mode->post_ctrl_reg_list);
+		if (ret)
+			return ret;
+	}
+	/* For native FHD, XMSTA=STOP until an owner verifies CSI quiet.
+	 * The sensor start by itself never certifies a usable frame stream.
+	 */
 	return imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
 				IMX415_REG_VALUE_08BIT, 0);
 }
 
 static int __imx415_stop_stream(struct imx415 *imx415)
 {
+	int ret;
+
+	/* Do not publish a stopped epoch before I2C has acknowledged STOP.
+	 * On -EIO keep the original driver state and return the real error.
+	 */
+	ret = imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
+				IMX415_REG_VALUE_08BIT, 1);
+	if (ret)
+		return ret;
 	imx415->has_init_exp = false;
 	if (imx415->is_thunderboot)
 		imx415->is_first_streamoff = true;
 	imx415->is_tline_init = false;
-	return imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
-				IMX415_REG_VALUE_08BIT, 1);
+	return 0;
 }
 
 static int imx415_s_stream(struct v4l2_subdev *sd, int on)
@@ -2560,8 +3155,13 @@ static int imx415_s_stream(struct v4l2_subdev *sd, int on)
 			goto unlock_and_return;
 		}
 	} else {
-		__imx415_stop_stream(imx415);
+		ret = __imx415_stop_stream(imx415);
+		if (ret) {
+			dev_err(&client->dev, "sensor STREAMOFF unverified: %d\n", ret);
+			goto unlock_and_return;
+		}
 		pm_runtime_put(&client->dev);
+		imx415->native_fhd_stage = IMX415_FHD_IDLE;
 	}
 
 	imx415->streaming = on;
@@ -2854,6 +3454,7 @@ static const struct v4l2_subdev_internal_ops imx415_internal_ops = {
 static const struct v4l2_subdev_core_ops imx415_core_ops = {
 	.s_power = imx415_s_power,
 	.ioctl = imx415_ioctl,
+	.command = imx415_native_fhd_kernel_command,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl32 = imx415_compat_ioctl32,
 #endif
@@ -2862,6 +3463,7 @@ static const struct v4l2_subdev_core_ops imx415_core_ops = {
 static const struct v4l2_subdev_video_ops imx415_video_ops = {
 	.s_stream = imx415_s_stream,
 	.g_frame_interval = imx415_g_frame_interval,
+	.s_frame_interval = imx415_s_frame_interval,
 };
 
 static const struct v4l2_subdev_pad_ops imx415_pad_ops = {
