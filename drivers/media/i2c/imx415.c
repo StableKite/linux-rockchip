@@ -2743,6 +2743,29 @@ static long imx415_native_fhd_kernel_command(struct v4l2_subdev *sd,
     return ret;
 }
 
+/* HDR controls must not undo the format and frame-rate chosen with S_FMT. */
+static const struct imx415_mode *imx415_find_hdr_mode(struct imx415 *imx415,
+						   u32 hdr_mode)
+{
+	const struct imx415_mode *selected = imx415->cur_mode;
+	unsigned int i;
+
+	if (selected->hdr_mode == hdr_mode)
+		return selected;
+
+	for (i = 0; i < imx415->cfg_num; i++) {
+		const struct imx415_mode *mode = &imx415->supported_modes[i];
+
+		if (mode->width == selected->width &&
+		    mode->height == selected->height &&
+		    mode->bus_fmt == selected->bus_fmt &&
+		    mode->hdr_mode == hdr_mode)
+			return mode;
+	}
+
+	return NULL;
+}
+
 static long imx415_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
 	struct imx415 *imx415 = to_imx415(sd);
@@ -2777,22 +2800,14 @@ static long imx415_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 		hdr = (struct rkmodule_hdr_cfg *)arg;
 		w = imx415->cur_mode->width;
 		h = imx415->cur_mode->height;
-		for (i = 0; i < imx415->cfg_num; i++) {
-			if (w == imx415->supported_modes[i].width &&
-			    h == imx415->supported_modes[i].height &&
-			    imx415->supported_modes[i].hdr_mode == hdr->hdr_mode) {
-				dev_info(&imx415->client->dev, "set hdr cfg, set mode to %d\n", i);
-				imx415_change_mode(imx415, &imx415->supported_modes[i]);
-				break;
-			}
-		}
-		if (i == imx415->cfg_num) {
+		mode = imx415_find_hdr_mode(imx415, hdr->hdr_mode);
+		if (!mode) {
 			dev_err(&imx415->client->dev,
 				"not find hdr mode:%d %dx%d config\n",
 				hdr->hdr_mode, w, h);
 			ret = -EINVAL;
 		} else {
-			mode = imx415->cur_mode;
+			imx415_change_mode(imx415, mode);
 			if (imx415->streaming) {
 				ret = imx415_write_reg(imx415->client, IMX415_GROUP_HOLD_REG,
 					IMX415_REG_VALUE_08BIT, IMX415_GROUP_HOLD_START);
