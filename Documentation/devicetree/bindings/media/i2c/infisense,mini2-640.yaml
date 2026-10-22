@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/i2c/infisense,mini2-640.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Infisense Mini2 640 / RS300 non-radiometric thermal imaging module
+
+maintainers:
+  - Anton Bogdanov <irobolightning@gmail.com>
+
+description: |
+  Non-radiometric Mini2 640x512, VOx 12um module with native two-lane
+  MIPI CSI-2 YUV422 video and I2C command/control, without the optional
+  USB interface adapter board. The module requires a regulated 5V supply
+  and does not require an external pixel clock. This binding describes
+  only this module family, not generic thermal sensors.
+
+properties:
+  compatible:
+    const: infisense,mini2-640
+
+  reg:
+    maxItems: 1
+
+  vdd-supply:
+    description: Regulated 5V supply to native module VDD5V pins 1 and 50.
+
+  reset-gpios:
+    maxItems: 1
+    description: Optional module active-low reset (pin 31).
+
+  port:
+    $ref: /schemas/graph.yaml#/properties/port
+    description: Output CSI-2 port with two data lanes and 200MHz link frequency.
+
+required:
+  - compatible
+  - reg
+  - vdd-supply
+  - port
+
+additionalProperties: false
+
+...

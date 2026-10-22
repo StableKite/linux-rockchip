@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR MIT)
+/dts-v1/;
+/plugin/;
+
+/*
+ * StableKite / Orange Pi 5 (RK3588S) – optional Mini2 640 overlay.
+ *
+ * This uses CSI camera1: i2c7 -> csi2_dphy0 -> mipi2_csi2 ->
+ * rkcif_mipi_lvds2, without changing the board's default DTB.
+ * Do not enable simultaneously with another camera using camera1.
+ *
+ * Power: the module needs a REAL, correctly regulated 5V supply.
+ * The standard module accepts 5V at contacts 1 and 50 of the 50-pin
+ * connector. Never feed 5V into MIPI, 1.8V I2C or 3.3V UART pins.
+ * The 50-pin -> SBC CSI adapter, 1.8V I2C logic-level conversion,
+ * common ground and high-speed wiring are physical board requirements.
+ *
+ * IMPORTANT: The module has no external MCLK input. Do not copy
+ * phantom 'xvclk' and 3.3V regulators from other SBC RS300 examples.
+ */
+
+&i2c7 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	mini2_640: camera@3c {
+		compatible = "infisense,mini2-640";
+		reg = <0x3c>;
+		/* vcc5v0_sys is present in the R70 Orange Pi 5 board DTS */
+		vdd-supply = <&vcc5v0_sys>;
+		status = "okay";
+
+		port {
+			mini2_640_out: endpoint {
+				remote-endpoint = <&mipi_in_ucam0>;
+				bus-type = <4>; /* CSI-2 D-PHY */
+				data-lanes = <1 2>;
+				/* Cheng'en confirms 400 Mbps/lane (DDR). */
+				link-frequencies = /bits/ 64 <200000000>;
+			};
+		};
+	};
+};
+
+/* Camera1's default OV13850 endpoint is disabled in the base board DTS. */
+&csi2_dphy0_hw {
+	status = "okay";
+};
+
+/* Preserve the pre-existing CSI endpoint and its phandle, including
+ * references from the disabled OV13850 camera1 node in the base DTB.
+ */
+&mipi_in_ucam0 {
+	remote-endpoint = <&mini2_640_out>;
+	data-lanes = <1 2>;
+};
+
+&csi2_dphy0 {
+	status = "okay";
+};
+
+&mipi2_csi2 {
+	status = "okay";
+};
+
+&rkcif {
+	status = "okay";
+};
+
+&rkcif_mipi_lvds2 {
+	status = "okay";
+};

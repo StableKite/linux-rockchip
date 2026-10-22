@@ -850,6 +850,22 @@ config VIDEO_IMX415
 	  To compile this driver as a module, choose M here: the
 	  module will be called imx415.
 
+config VIDEO_RS300
+	tristate "Infisense Mini2 640 (RS300) native CSI-2 support"
+	depends on I2C && VIDEO_DEV && OF
+	depends on MEDIA_CAMERA_SUPPORT
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	help
+	  Video4Linux2 CSI-2 subdevice for the non-radiometric
+	  Mini2 640x512 thermal imaging module with I2C controls.
+	  The module receives 5 V externally and transmits native
+	  YUV422 over two CSI-2 data lanes. Rockchip RKCIF captures
+	  video and owns DMA buffers.
+
+	  Choose M to build the rs300.ko module.
+
 config VIDEO_IMX708
 	tristate "Sony IMX708 sensor support"
 	depends on I2C && VIDEO_DEV
