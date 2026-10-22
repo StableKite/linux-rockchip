@@ -667,6 +667,8 @@ struct rkcif_stream {
 	struct rkmodule_exp_info	sensor_exp_info;
 	int				real_skip_num;
 	bool				stopping;
+	/* Exclusive native ERR_APP source stop, protected by stream_lock. */
+	bool				reset_stop_committed;
 	struct csi_channel_info		channel_info;
 	bool				crop_enable;
 	bool				crop_dyn_en;
