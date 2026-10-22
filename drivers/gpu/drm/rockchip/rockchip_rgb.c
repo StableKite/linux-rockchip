@@ -715,7 +715,9 @@ static int rockchip_mcu_panel_init(struct rockchip_rgb *rgb)
 			return -EINVAL;
 		}
 
-		np_mcu_timing = of_get_child_by_name(mcu_panel->np_crtc, "mcu-timing");
+		np_mcu_timing = of_parse_phandle(mcu_panel->np_crtc, "rockchip,mcu-timing", 0);
+		if (!np_mcu_timing)
+			np_mcu_timing = of_get_child_by_name(mcu_panel->np_crtc, "mcu-timing");
 		if (!np_mcu_timing) {
 			np_crtc = of_get_parent(mcu_panel->np_crtc);
 			if (np_crtc)

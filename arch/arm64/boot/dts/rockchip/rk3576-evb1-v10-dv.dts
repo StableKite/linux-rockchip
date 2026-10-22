@@ -859,7 +859,15 @@
 };
 
 &vp1 {
-	mcu-timing {
+	rockchip,mcu-timing = <&mcu_timing_vp1>;
+};
+
+&vdd_0v75_s3 {
+	regulator-min-microvolt = <550000>;
+};
+
+/ {
+	mcu_timing_vp1: mcu-timing-vp1 {
 		mcu-pix-total = <5>;
 		mcu-cs-pst = <1>;
 		mcu-cs-pend = <4>;
@@ -868,8 +876,4 @@
 
 		mcu-hold-mode = <0>;
 	};
-};
-
-&vdd_0v75_s3 {
-	regulator-min-microvolt = <550000>;
 };

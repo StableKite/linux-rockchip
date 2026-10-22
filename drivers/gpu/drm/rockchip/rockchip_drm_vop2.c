@@ -19909,7 +19909,9 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 				return ret;
 			}
 
-			mcu_timing_node = of_get_child_by_name(child, "mcu-timing");
+			mcu_timing_node = of_parse_phandle(child, "rockchip,mcu-timing", 0);
+			if (!mcu_timing_node)
+				mcu_timing_node = of_get_child_by_name(child, "mcu-timing");
 			if (mcu_timing_node) {
 				if (!of_property_read_u32(mcu_timing_node, "mcu-pix-total", &val))
 					vop2->vps[vp_id].mcu_timing.mcu_pix_total = val;
@@ -19923,6 +19925,7 @@ static int vop2_bind(struct device *dev, struct device *master, void *data)
 					vop2->vps[vp_id].mcu_timing.mcu_rw_pend = val;
 				if (!of_property_read_u32(mcu_timing_node, "mcu-hold-mode", &val))
 					vop2->vps[vp_id].mcu_timing.mcu_hold_mode = val;
+				of_node_put(mcu_timing_node);
 			}
 
 			vop2_of_get_dsp_lut(vop2, child, vp_id);

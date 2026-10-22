@@ -267,7 +267,11 @@
 	 * To increase the frame rate, reduce all parameters because
 	 * the max dclk rate of mcu is 150M in rk3562.
 	 */
-	mcu-timing {
+	rockchip,mcu-timing = <&mcu_timing_vp0>;
+};
+
+/ {
+	mcu_timing_vp0: mcu-timing-vp0 {
 		mcu-pix-total = <5>;
 		mcu-cs-pst = <1>;
 		mcu-cs-pend = <4>;

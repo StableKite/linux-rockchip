@@ -240,7 +240,11 @@
 };
 
 &vp2 {
-	mcu-timing {
+	rockchip,mcu-timing = <&mcu_timing_vp2>;
+};
+
+/ {
+	mcu_timing_vp2: mcu-timing-vp2 {
 		mcu-pix-total = <5>;
 		mcu-cs-pst = <1>;
 		mcu-cs-pend = <4>;

@@ -65,6 +65,16 @@ properties:
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
 
+    patternProperties:
+      '^port@[0-2]$':
+        properties:
+          rockchip,mcu-timing:
+            $ref: /schemas/types.yaml#/definitions/phandle
+            description:
+              Reference to the MCU timing node for this video port. Keeping
+              timing data outside the graph port leaves only endpoints as
+              child nodes. Legacy mcu-timing child nodes remain supported.
+
     properties:
       port@0:
         $ref: /schemas/graph.yaml#/properties/port
