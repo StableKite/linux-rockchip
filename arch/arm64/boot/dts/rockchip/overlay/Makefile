@@ -21,6 +21,7 @@ dtbo-$(CONFIG_ARCH_ROCKCHIP) += \
 	hinlink-h88k-240x135-lcd.dtbo \
 	orangepi-5-lcd1.dtbo \
 	orangepi-5-lcd2.dtbo \
+	orangepi-5-mini2-rs300.dtbo \
 	orangepi-5-sata.dtbo \
 	orangepi-5-ap6275p.dtbo \
 	orangepi-5-disable-led.dtbo \
