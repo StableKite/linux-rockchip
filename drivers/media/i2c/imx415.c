@@ -204,7 +204,7 @@ struct imx415_mode {
 	const struct regval *reg_list;
 	/* Write exact 4K timing/CSI overlay AFTER V4L2 controls. */
 	const struct regval *post_ctrl_reg_list;
-	/* Full sensor binning 134-op replace_init; XMSTA stays STOP until RX. */
+	/* Full sensor binning 134-op replace_init; XMSTA starts after CSI/DPHY. */
 	bool fullhd_replace_init;
 	u32 hdr_mode;
 	u32 vc[PAD_MAX];
@@ -1606,7 +1606,7 @@ static const struct imx415_mode supported_modes[] = {
 		.vc[PAD0] = 0, .xvclk = IMX415_XVCLK_FREQ_37M,
 	},
 	/* Native 1944x1097 2x2 full-sensor binning H357/1486 Mb/s/lane.
-	 * XMSTA remains STOP until private kernel owner prepares CSI receiver.
+	 * XMSTA remains STOP until s_stream wakes the initialized CSI receiver.
 	 */
 	{
 		.bus_fmt = MEDIA_BUS_FMT_SGBRG10_1X10,
@@ -3069,6 +3069,35 @@ static long imx415_compat_ioctl32(struct v4l2_subdev *sd,
 }
 #endif
 
+/* The CIF pipeline starts CSI/DPHY before calling sensor s_stream(). */
+static int imx415_native_fhd_start(struct imx415 *imx415)
+{
+	int ret;
+
+	imx415->native_fhd_stage = IMX415_FHD_UNCERTAIN;
+	usleep_range(80000, 81000);
+	ret = imx415_native_fhd_check_reg(imx415, 0x3000, 0);
+	if (ret)
+		goto stop;
+	ret = imx415_native_fhd_check_reg(imx415, 0x3002, 1);
+	if (ret)
+		goto stop;
+	ret = imx415_write_reg(imx415->client, 0x3002, 1, 0);
+	if (ret)
+		goto stop;
+	ret = imx415_native_fhd_check_reg(imx415, 0x3002, 0);
+	if (ret)
+		goto stop;
+	imx415->native_fhd_stage = IMX415_FHD_RELEASED;
+	return 0;
+
+stop:
+	/* Best effort containment; retain the original I2C/readback error. */
+	imx415_write_reg(imx415->client, 0x3002, 1, 1);
+	imx415_write_reg(imx415->client, 0x3000, 1, 1);
+	return ret;
+}
+
 static int __imx415_start_stream(struct imx415 *imx415)
 {
 	int ret;
@@ -3112,11 +3141,13 @@ static int __imx415_start_stream(struct imx415 *imx415)
 		if (ret)
 			return ret;
 	}
-	/* For native FHD, XMSTA=STOP until an owner verifies CSI quiet.
-	 * The sensor start by itself never certifies a usable frame stream.
-	 */
-	return imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
-				IMX415_REG_VALUE_08BIT, 0);
+	ret = imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
+			       IMX415_REG_VALUE_08BIT, 0);
+	if (ret)
+		return ret;
+	if (imx415->cur_mode->fullhd_replace_init)
+		return imx415_native_fhd_start(imx415);
+	return 0;
 }
 
 static int __imx415_stop_stream(struct imx415 *imx415)
@@ -3126,6 +3157,11 @@ static int __imx415_stop_stream(struct imx415 *imx415)
 	/* Do not publish a stopped epoch before I2C has acknowledged STOP.
 	 * On -EIO keep the original driver state and return the real error.
 	 */
+	if (imx415->cur_mode->fullhd_replace_init) {
+		ret = imx415_write_reg(imx415->client, 0x3002, 1, 1);
+		if (ret)
+			return ret;
+	}
 	ret = imx415_write_reg(imx415->client, IMX415_REG_CTRL_MODE,
 				IMX415_REG_VALUE_08BIT, 1);
 	if (ret)
