@@ -355,7 +355,8 @@ static int csi2_s_stream(struct v4l2_subdev *sd, int enable)
 
 	dev_err(csi2->dev, "stream %s, src_sd: %p, sd_name:%s\n",
 		enable ? "on" : "off",
-		csi2->src_sd, csi2->src_sd->name);
+		csi2->src_sd,
+		csi2->src_sd ? csi2->src_sd->name : "<unbound>");
 
 	/*
 	 * enable/disable streaming only if stream_count is
