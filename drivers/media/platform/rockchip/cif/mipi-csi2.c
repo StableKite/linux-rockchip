@@ -395,7 +395,11 @@ static int csi2_link_setup(struct media_entity *entity,
 
 	remote_sd = media_entity_to_v4l2_subdev(remote->entity);
 
-	mutex_lock(&csi2->lock);
+	/* media_entity_setup_link() holds graph_mutex. Stream startup
+	 * can hold csi2->lock while walking the graph; do not wait here.
+	 */
+	if (!mutex_trylock(&csi2->lock))
+		return -EBUSY;
 
 	if (local->flags & MEDIA_PAD_FL_SOURCE) {
 		if (flags & MEDIA_LNK_FL_ENABLED) {
