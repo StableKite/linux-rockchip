@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/dts-v1/;
+/plugin/;
+
+/ {
+        metadata {
+                title = "Enable Rocket NPU on Orange Pi 5";
+                compatible = "xunlong,orangepi-5";
+                category = "misc";
+                description = "Disable vendor RKNPU nodes and enable Rocket RKNN nodes with Orange Pi 5 NPU supplies";
+        };
+
+        fragment@0 {
+                target = <&rknpu>;
+                __overlay__ {
+                        status = "disabled";
+                };
+        };
+
+        fragment@1 {
+                target = <&rknpu_mmu>;
+                __overlay__ {
+                        status = "disabled";
+                };
+        };
+
+        fragment@2 {
+                target = <&pd_npu>;
+                __overlay__ {
+                        domain-supply = <&vdd_npu_s0>;
+                };
+        };
+
+        fragment@3 {
+                target = <&rknn_core_0>;
+                __overlay__ {
+                        npu-supply = <&vdd_npu_s0>;
+                        sram-supply = <&vdd_npu_s0>;
+                        status = "okay";
+                };
+        };
+
+        fragment@4 {
+                target = <&rknn_mmu_0>;
+                __overlay__ {
+                        status = "okay";
+                };
+        };
+
+        fragment@5 {
+                target = <&rknn_core_1>;
+                __overlay__ {
+                        npu-supply = <&vdd_npu_s0>;
+                        sram-supply = <&vdd_npu_s0>;
+                        status = "okay";
+                };
+        };
+
+        fragment@6 {
+                target = <&rknn_mmu_1>;
+                __overlay__ {
+                        status = "okay";
+                };
+        };
+
+        fragment@7 {
+                target = <&rknn_core_2>;
+                __overlay__ {
+                        npu-supply = <&vdd_npu_s0>;
+                        sram-supply = <&vdd_npu_s0>;
+                        status = "okay";
+                };
+        };
+
+        fragment@8 {
+                target = <&rknn_mmu_2>;
+                __overlay__ {
+                        status = "okay";
+                };
+        };
+};
