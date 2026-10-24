@@ -355,7 +355,8 @@ static int csi2_s_stream(struct v4l2_subdev *sd, int enable)
 
 	dev_err(csi2->dev, "stream %s, src_sd: %p, sd_name:%s\n",
 		enable ? "on" : "off",
-		csi2->src_sd, csi2->src_sd->name);
+		csi2->src_sd,
+		csi2->src_sd ? csi2->src_sd->name : "<unbound>");
 
 	/*
 	 * enable/disable streaming only if stream_count is
@@ -394,7 +395,11 @@ static int csi2_link_setup(struct media_entity *entity,
 
 	remote_sd = media_entity_to_v4l2_subdev(remote->entity);
 
-	mutex_lock(&csi2->lock);
+	/* media_entity_setup_link() holds graph_mutex. Stream startup
+	 * can hold csi2->lock while walking the graph; do not wait here.
+	 */
+	if (!mutex_trylock(&csi2->lock))
+		return -EBUSY;
 
 	if (local->flags & MEDIA_PAD_FL_SOURCE) {
 		if (flags & MEDIA_LNK_FL_ENABLED) {
@@ -1215,13 +1220,13 @@ static const struct csi2_match_data rk1808_csi2_match_data = {
 	.num_hw = 1,
 };
 
-static const struct csi2_match_data rk3288_csi2_match_data = {
+static const struct csi2_match_data rk3288_csi2_match_data __maybe_unused = {
 	.chip_id = CHIP_RK3288_CSI2,
 	.num_pads = CSI2_NUM_PADS_SINGLE_LINK,
 	.num_hw = 1,
 };
 
-static const struct csi2_match_data rv1126_csi2_match_data = {
+static const struct csi2_match_data rv1126_csi2_match_data __maybe_unused = {
 	.chip_id = CHIP_RV1126_CSI2,
 	.num_pads = CSI2_NUM_PADS,
 	.num_hw = 1,
@@ -1239,7 +1244,7 @@ static const struct csi2_match_data rk3588_csi2_match_data = {
 	.num_hw = 6,
 };
 
-static const struct csi2_match_data rv1106_csi2_match_data = {
+static const struct csi2_match_data rv1106_csi2_match_data __maybe_unused = {
 	.chip_id = CHIP_RV1106_CSI2,
 	.num_pads = CSI2_NUM_PADS_MAX,
 	.num_hw = 2,
@@ -1257,7 +1262,7 @@ static const struct csi2_match_data rk3576_csi2_match_data = {
 	.num_hw = 5,
 };
 
-static const struct csi2_match_data rv1103b_csi2_match_data = {
+static const struct csi2_match_data rv1103b_csi2_match_data __maybe_unused = {
 	.chip_id = CHIP_RV1103B_CSI2,
 	.num_pads = CSI2_NUM_PADS_MAX,
 	.num_hw = 2,
@@ -1459,11 +1464,11 @@ static const struct csi2_hw_match_data rk1808_csi2_hw_match_data = {
 	.chip_id = CHIP_RK1808_CSI2,
 };
 
-static const struct csi2_hw_match_data rk3288_csi2_hw_match_data = {
+static const struct csi2_hw_match_data rk3288_csi2_hw_match_data __maybe_unused = {
 	.chip_id = CHIP_RK3288_CSI2,
 };
 
-static const struct csi2_hw_match_data rv1126_csi2_hw_match_data = {
+static const struct csi2_hw_match_data rv1126_csi2_hw_match_data __maybe_unused = {
 	.chip_id = CHIP_RV1126_CSI2,
 };
 
@@ -1475,7 +1480,7 @@ static const struct csi2_hw_match_data rk3588_csi2_hw_match_data = {
 	.chip_id = CHIP_RK3588_CSI2,
 };
 
-static const struct csi2_hw_match_data rv1106_csi2_hw_match_data = {
+static const struct csi2_hw_match_data rv1106_csi2_hw_match_data __maybe_unused = {
 	.chip_id = CHIP_RV1106_CSI2,
 };
 
@@ -1487,7 +1492,7 @@ static const struct csi2_hw_match_data rk3576_csi2_hw_match_data = {
 	.chip_id = CHIP_RK3576_CSI2,
 };
 
-static const struct csi2_hw_match_data rv1103b_csi2_hw_match_data = {
+static const struct csi2_hw_match_data rv1103b_csi2_hw_match_data __maybe_unused = {
 	.chip_id = CHIP_RV1103B_CSI2,
 };
 
