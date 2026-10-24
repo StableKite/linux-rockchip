@@ -603,6 +603,7 @@
 };
 
 &rknpu {
+	rockchip,sram = <&rknpu_sram>;
 	rknpu-supply = <&vdd_npu_s0>;
 	mem-supply = <&vdd_npu_mem_s0>;
 	status = "okay";
@@ -617,6 +618,7 @@
 };
 
 &rkvdec0 {
+	/delete-property/ rockchip,sram;
 	status = "okay";
 };
 
@@ -625,6 +627,7 @@
 };
 
 &rkvdec1 {
+	/delete-property/ rockchip,sram;
 	status = "okay";
 };
 
@@ -1362,3 +1365,15 @@
 	status = "okay";
 };
 
+/*
+ * StableKite: system SRAM belongs to RKNPU. The existing RKVDEC driver
+ * backs its reserved RCB IOVAs with DDR when rockchip,sram is absent.
+ */
+&syssram {
+	/delete-node/ rkvdec-sram@0;
+	/delete-node/ rkvdec-sram@78000;
+
+	rknpu_sram: rknpu-sram@0 {
+		reg = <0x0 0xef000>;
+	};
+};
