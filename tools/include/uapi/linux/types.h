@@ -4,6 +4,11 @@
 
 #include <asm-generic/int-ll64.h>
 
+/* Modern arm64 UAPI signal/ptrace contexts contain 128-bit registers. */
+#ifdef __SIZEOF_INT128__
+typedef unsigned __int128 __u128;
+#endif
+
 /* copied from linux:include/uapi/linux/types.h */
 #define __bitwise
 typedef __u16 __bitwise __le16;

@@ -108,9 +108,12 @@ static void drm_minor_alloc_release(struct drm_device *dev, void *data)
 
 	put_device(minor->kdev);
 
+#if IS_ENABLED(CONFIG_DRM_ACCEL)
 	if (minor->type == DRM_MINOR_ACCEL) {
 		xa_erase(&accel_minors_xa, minor->index);
-	} else {
+	} else
+#endif
+	{
 		spin_lock_irqsave(&drm_minor_lock, flags);
 		idr_remove(&drm_minors_idr, minor->index);
 		spin_unlock_irqrestore(&drm_minor_lock, flags);
@@ -130,12 +133,15 @@ static int drm_minor_alloc(struct drm_device *dev, unsigned int type)
 	minor->type = type;
 	minor->dev = dev;
 
+#if IS_ENABLED(CONFIG_DRM_ACCEL)
 	if (type == DRM_MINOR_ACCEL) {
 		r = xa_alloc(&accel_minors_xa, &minor->index, minor,
 			     XA_LIMIT(0, ACCEL_MAX_MINORS - 1), GFP_KERNEL);
 		if (r < 0)
 			return r;
-	} else {
+	} else
+#endif
+	{
 		idr_preload(GFP_KERNEL);
 		spin_lock_irqsave(&drm_minor_lock, flags);
 		r = idr_alloc(&drm_minors_idr,
@@ -191,9 +197,12 @@ static int drm_minor_register(struct drm_device *dev, unsigned int type)
 		goto err_debugfs;
 
 	/* replace NULL with @minor so lookups will succeed from now on */
+#if IS_ENABLED(CONFIG_DRM_ACCEL)
 	if (minor->type == DRM_MINOR_ACCEL) {
 		xa_store(&accel_minors_xa, minor->index, minor, GFP_KERNEL);
-	} else {
+	} else
+#endif
+	{
 		spin_lock_irqsave(&drm_minor_lock, flags);
 		idr_replace(&drm_minors_idr, minor, minor->index);
 		spin_unlock_irqrestore(&drm_minor_lock, flags);
@@ -218,9 +227,12 @@ static void drm_minor_unregister(struct drm_device *dev, unsigned int type)
 		return;
 
 	/* replace @minor with NULL so lookups will fail from now on */
+#if IS_ENABLED(CONFIG_DRM_ACCEL)
 	if (minor->type == DRM_MINOR_ACCEL) {
 		xa_store(&accel_minors_xa, minor->index, NULL, GFP_KERNEL);
-	} else {
+	} else
+#endif
+	{
 		spin_lock_irqsave(&drm_minor_lock, flags);
 		idr_replace(&drm_minors_idr, NULL, minor->index);
 		spin_unlock_irqrestore(&drm_minor_lock, flags);
