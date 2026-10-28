@@ -13,6 +13,11 @@
 #include <asm/types.h>
 #include <asm/posix_types.h>
 
+/* Modern arm64 UAPI signal/ptrace contexts contain 128-bit registers. */
+#ifdef __SIZEOF_INT128__
+typedef unsigned __int128 __u128;
+#endif
+
 struct page;
 struct kmem_cache;
 
