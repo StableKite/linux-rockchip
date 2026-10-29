@@ -366,7 +366,7 @@ static const struct regval ov13855_global_regs[] = {
 	{REG_NULL, 0x00},
 };
 
-#ifdef DEBUG
+#if 1 /* expose existing vendor modes without DEBUG logging */
 /*
  * Xclk 24Mhz
  * max_framerate 30fps
@@ -942,7 +942,7 @@ static const struct ov13855_mode supported_modes[] = {
 		.reg_list = ov13855_4224x3136_30fps_regs,
 		.link_freq_idx = 0,
 	},
-#ifdef DEBUG
+#if 1 /* expose existing vendor modes without DEBUG logging */
 	{
 		.bus_fmt = OV13855_MEDIA_BUS_FMT,
 		.width = 2112,
@@ -971,7 +971,7 @@ static const struct ov13855_mode supported_modes[] = {
 		.vts_def = 0x0c8e,
 		.bpp = 10,
 		.reg_list = ov13855_4224x3136_15fps_regs,
-		.link_freq_idx = 0,
+		.link_freq_idx = 1,
 	},
 #endif
 };
